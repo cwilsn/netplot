@@ -17,7 +17,11 @@ Covers:
   the returned payload).
 - Endpoint matrix via :class:`fastapi.testclient.TestClient`: ``raw`` (D1
   regression), ``1m``, ``auto`` (raw fit vs 1m fallback), invalid → 400,
-  full-loss bucket nulls, sparse omission, paused session.
+  full-loss bucket nulls, sparse omission, paused session. Each endpoint
+  test registers an UNSTARTED session directly on the app's manager and
+  points the app at a per-test ``data_dir``: the sample/rollup sets contain
+  exactly what the test injects, no real probe/traceroute/DNS runs, and no
+  leftover default-dir ``sessions.json`` can boot-restore live sessions.
 """
 
 from __future__ import annotations
@@ -326,15 +330,26 @@ def test_append_sample_folds_into_target_rollup() -> None:
 # ----------------------------------------------------------- endpoint matrix
 
 
-def _create_then(client: TestClient, target: str = "127.0.0.1"):
-    r = client.post("/api/traces", json={"target": target, "interval_s": 2.0})
-    assert r.status_code == 201
-    return r.json()["id"]
+def _create_then(
+    client: TestClient, target: str = "127.0.0.1", interval_s: float = 2.0
+):
+    """Register one UNSTARTED session directly and return its id.
+
+    Every endpoint test below injects its whole sample set itself (or asserts
+    an empty stream), so the session must never run a probe loop, traceroute
+    discovery, or DNS resolution. ``SessionManager.create`` registers
+    without starting any task, so the raw deque and the rollup hold exactly
+    what the test injected; creating through ``POST /api/traces`` instead
+    would start real probes that can land a live loopback sample before a
+    following pause takes effect.
+    """
+    session = client.app.state.session_manager.create(target, interval_s=interval_s)
+    return session.id
 
 
-def test_history_1m_resolution_payload_shape_and_math() -> None:
+def test_history_1m_resolution_payload_shape_and_math(tmp_path) -> None:
     """resolution=1m returns the rollup envelope with correct math."""
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
         sid = _create_then(client)
         session = client.app.state.session_manager.get(sid)
         client.post(f"/api/traces/{sid}/pause")
@@ -369,8 +384,8 @@ def test_history_1m_resolution_payload_shape_and_math() -> None:
         assert ts == sorted(ts)
 
 
-def test_history_1m_resolution_full_loss_bucket_nulls() -> None:
-    with TestClient(create_app()) as client:
+def test_history_1m_resolution_full_loss_bucket_nulls(tmp_path) -> None:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
         sid = _create_then(client)
         session = client.app.state.session_manager.get(sid)
         client.post(f"/api/traces/{sid}/pause")
@@ -385,9 +400,9 @@ def test_history_1m_resolution_full_loss_bucket_nulls() -> None:
         assert any(b["avg_ms"] is None for b in full_loss)
 
 
-def test_history_1m_resolution_omits_empty_buckets() -> None:
+def test_history_1m_resolution_omits_empty_buckets(tmp_path) -> None:
     """Buckets with no samples are absent — sparse response."""
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
         sid = _create_then(client)
         session = client.app.state.session_manager.get(sid)
         client.post(f"/api/traces/{sid}/pause")
@@ -407,9 +422,9 @@ def test_history_1m_resolution_omits_empty_buckets() -> None:
         assert (t0 // 60 * 60 + 60) not in ts
 
 
-def test_history_auto_picks_raw_when_range_fits_raw_retention() -> None:
+def test_history_auto_picks_raw_when_range_fits_raw_retention(tmp_path) -> None:
     """A short range that fits within SAMPLE_CAP * interval_s picks raw."""
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
         sid = _create_then(
             client,
             target="127.0.0.1",
@@ -431,9 +446,9 @@ def test_history_auto_picks_raw_when_range_fits_raw_retention() -> None:
         assert "buckets" not in body
 
 
-def test_history_auto_picks_1m_when_range_exceeds_raw_retention() -> None:
+def test_history_auto_picks_1m_when_range_exceeds_raw_retention(tmp_path) -> None:
     """A range beyond SAMPLE_CAP * interval_s picks 1m."""
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
         sid = _create_then(client)
         session = client.app.state.session_manager.get(sid)
         client.post(f"/api/traces/{sid}/pause")
@@ -451,8 +466,8 @@ def test_history_auto_picks_1m_when_range_exceeds_raw_retention() -> None:
         assert "samples" not in body
 
 
-def test_history_invalid_resolution_returns_400() -> None:
-    with TestClient(create_app()) as client:
+def test_history_invalid_resolution_returns_400(tmp_path) -> None:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
         sid = _create_then(client)
         r = client.get(
             f"/api/traces/{sid}/history?hop=0&start=0&end=9999&resolution=bucketed"
@@ -467,8 +482,8 @@ def test_history_invalid_resolution_returns_400() -> None:
             assert rr.status_code == 200
 
 
-def test_history_1m_unknown_hop_returns_404() -> None:
-    with TestClient(create_app()) as client:
+def test_history_1m_unknown_hop_returns_404(tmp_path) -> None:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
         sid = _create_then(client)
         client.post(f"/api/traces/{sid}/pause")
         r = client.get(
@@ -477,15 +492,15 @@ def test_history_1m_unknown_hop_returns_404() -> None:
         assert r.status_code == 404
 
 
-def test_history_1m_unknown_session_returns_404() -> None:
-    client = TestClient(create_app())
+def test_history_1m_unknown_session_returns_404(tmp_path) -> None:
+    client = TestClient(create_app(data_dir=tmp_path))
     r = client.get("/api/traces/deadbeef/history?hop=0&start=0&end=9999&resolution=1m")
     assert r.status_code == 404
 
 
-def test_history_1m_works_while_paused() -> None:
+def test_history_1m_works_while_paused(tmp_path) -> None:
     """Server rollups are authoritative regardless of probe-loop state."""
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
         sid = _create_then(client)
         session = client.app.state.session_manager.get(sid)
         client.post(f"/api/traces/{sid}/pause")
@@ -498,8 +513,8 @@ def test_history_1m_works_while_paused() -> None:
         assert len(body["buckets"]) >= 1
 
 
-def test_history_1m_empty_stream_returns_null_earliest() -> None:
-    with TestClient(create_app()) as client:
+def test_history_1m_empty_stream_returns_null_earliest(tmp_path) -> None:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
         sid = _create_then(client)
         client.post(f"/api/traces/{sid}/pause")
         r = client.get(
@@ -511,9 +526,9 @@ def test_history_1m_empty_stream_returns_null_earliest() -> None:
         assert body["buckets"] == []
 
 
-def test_history_raw_resolution_is_byte_compatible_with_d1() -> None:
+def test_history_raw_resolution_is_byte_compatible_with_d1(tmp_path) -> None:
     """The default raw path (D1) is unchanged: same envelope, same samples."""
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
         sid = _create_then(client)
         session = client.app.state.session_manager.get(sid)
         client.post(f"/api/traces/{sid}/pause")
@@ -539,9 +554,9 @@ def test_history_raw_resolution_is_byte_compatible_with_d1() -> None:
         assert any(s["rtt_ms"] is None for s in body_default["samples"])
 
 
-def test_history_1m_snapshot_is_decoupled_from_live_rollup() -> None:
+def test_history_1m_snapshot_is_decoupled_from_live_rollup(tmp_path) -> None:
     """Mutating the rollup after the capture must not change the payload."""
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
         sid = _create_then(client)
         session = client.app.state.session_manager.get(sid)
         client.post(f"/api/traces/{sid}/pause")

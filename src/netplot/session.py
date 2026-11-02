@@ -1695,8 +1695,11 @@ class SessionManager:
         """Best-effort forward + reverse DNS for the target.
 
         Returns ``(target_ip, target_dns)``. Both may be ``None`` on lookup
-        failure. Never raises — target resolution is best-effort and must not
-        stall the session.
+        failure — ordinary resolution errors are swallowed so target
+        resolution never stalls the session. Cancellation is NOT swallowed:
+        it propagates (same lifecycle invariant as :meth:`_discover`) so
+        pause/shutdown actually stops a pending lookup instead of letting
+        discovery run on into the next await.
         """
         try:
             loop = asyncio.get_running_loop()
@@ -1715,6 +1718,12 @@ class SessionManager:
                     # members — cast through ``str`` to keep the type checker
                     # happy without runtime overhead.
                     ip = str(infos[0][4][0])
+        except asyncio.CancelledError:
+            # Pause/shutdown cancelled this lookup mid-flight. Swallowing it
+            # here would let _discover continue into its next await (the
+            # traceroute call) after the task was already cancelled, so pause
+            # would wait on a discovery that refuses to stop. Propagate.
+            raise
         except BaseException:  # noqa: BLE001 - best effort
             ip = None
 

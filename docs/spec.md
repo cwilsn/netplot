@@ -224,6 +224,9 @@ the configured interval; within a round all hop probes run concurrently.
   after probe/discovery tasks are cancelled and awaited; cleared on
   resume/start). For persistent sessions, pause/resume also rewrite the
   state file so a restart resumes the session in the same desired state.
+  Pausing also interrupts pending forward DNS; cancellation is never treated
+  as an ordinary lookup failure. Resuming restarts discovery if pause
+  interrupted it, while ordinary DNS failures remain best-effort.
   If the session was removed by a concurrent delete between resolution
   and lock acquisition, returns **HTTP 404** (stale-object guard). If
   the store is degraded, returns **HTTP 503**.

@@ -347,19 +347,22 @@ def test_render_help_and_type_for_every_family() -> None:
 
 
 def _make_app_with_session(tmp_path, target: str = "127.0.0.1"):
-    """Create an app + client, POST one trace, pause it, return handles.
+    """Create an app + client and register one UNSTARTED session directly.
+
+    The capture tests below own their sample sets completely: every sample
+    is injected into the session's deques by the test. Registering via
+    ``SessionManager.create`` — without ``start`` — keeps that contract
+    deterministic: no probe loop, traceroute discovery, or DNS task ever
+    runs, so a fast loopback probe can never land a live sample between
+    fixture setup and the capture read.
 
     ``tmp_path`` isolates the persistence store so a persistent-session test
     can never leak ``sessions.json`` into the next test's boot restore.
     """
     client = TestClient(create_app(data_dir=tmp_path))
     client.__enter__()
-    r = client.post("/api/traces", json={"target": target, "interval_s": 60.0})
-    assert r.status_code == 201
-    sid = r.json()["id"]
-    session = client.app.state.session_manager.get(sid)
-    client.post(f"/api/traces/{sid}/pause")  # stop the probe loop
-    return client, sid, session
+    session = client.app.state.session_manager.create(target, interval_s=60.0)
+    return client, session.id, session
 
 
 def test_capture_target_values_known_sample_set(tmp_path) -> None:
@@ -590,11 +593,12 @@ def test_metrics_endpoint_empty_has_no_samples(tmp_path) -> None:
 def test_metrics_endpoint_full_render_with_injected_samples(tmp_path) -> None:
     """End-to-end: inject samples, scrape /metrics, parse, assert values."""
     with TestClient(create_app(data_dir=tmp_path)) as client:
-        sid = client.post(
-            "/api/traces", json={"target": "127.0.0.1", "interval_s": 60.0}
-        ).json()["id"]
-        session = client.app.state.session_manager.get(sid)
-        client.post(f"/api/traces/{sid}/pause")
+        # Data-only fixture: register the session directly (unstarted) so no
+        # real probe/discovery task can add samples next to the injected set.
+        session = client.app.state.session_manager.create(
+            "127.0.0.1", interval_s=60.0
+        )
+        sid = session.id
         now = time.time()
         session.hops = [Hop(index=1, ip="10.0.0.1", dns="r")]
         session.route_state = "ready"
@@ -621,17 +625,9 @@ def test_metrics_endpoint_full_render_with_injected_samples(tmp_path) -> None:
 def test_metrics_endpoint_multi_session_no_cross_contamination(tmp_path) -> None:
     """Two sessions produce distinct series keyed by session_id/target."""
     with TestClient(create_app(data_dir=tmp_path)) as client:
-        r1 = client.post(
-            "/api/traces", json={"target": "127.0.0.1", "interval_s": 60.0}
-        )
-        r2 = client.post(
-            "/api/traces", json={"target": "127.0.0.2", "interval_s": 60.0}
-        )
-        sid1, sid2 = r1.json()["id"], r2.json()["id"]
-        for sid in (sid1, sid2):
-            client.post(f"/api/traces/{sid}/pause")
-        s1 = client.app.state.session_manager.get(sid1)
-        s2 = client.app.state.session_manager.get(sid2)
+        s1 = client.app.state.session_manager.create("127.0.0.1", interval_s=60.0)
+        s2 = client.app.state.session_manager.create("127.0.0.2", interval_s=60.0)
+        sid1, sid2 = s1.id, s2.id
         s1.samples.append(Sample(t=time.time(), rtt_ms=11.0))
         s2.samples.append(Sample(t=time.time(), rtt_ms=22.0))
 
@@ -655,11 +651,12 @@ def test_metrics_endpoint_multi_session_no_cross_contamination(tmp_path) -> None
 def test_metrics_endpoint_deleted_session_gone_on_next_scrape(tmp_path) -> None:
     """After DELETE, the session's series vanish from /metrics."""
     with TestClient(create_app(data_dir=tmp_path)) as client:
-        sid = client.post(
-            "/api/traces", json={"target": "127.0.0.1", "interval_s": 60.0}
-        ).json()["id"]
-        client.post(f"/api/traces/{sid}/pause")
-        session = client.app.state.session_manager.get(sid)
+        # Registered directly (unstarted): the DELETE lifecycle below is the
+        # real endpoint/manager path, but no probe loop ever races the sample.
+        session = client.app.state.session_manager.create(
+            "127.0.0.1", interval_s=60.0
+        )
+        sid = session.id
         session.samples.append(Sample(t=time.time(), rtt_ms=5.0))
         before = parse_prom(client.get("/metrics").text)
         assert _find(before["samples"], "netplot_session_info", {"session_id": sid})
@@ -676,11 +673,14 @@ def test_metrics_endpoint_deleted_session_gone_on_next_scrape(tmp_path) -> None:
 def test_metrics_endpoint_paused_session_state_label(tmp_path) -> None:
     """A paused session still emits series with state="paused"."""
     with TestClient(create_app(data_dir=tmp_path)) as client:
-        sid = client.post(
-            "/api/traces", json={"target": "127.0.0.1", "interval_s": 60.0}
-        ).json()["id"]
+        session = client.app.state.session_manager.create(
+            "127.0.0.1", interval_s=60.0
+        )
+        sid = session.id
+        # Real pause endpoint + manager transition (nothing to cancel — the
+        # session was never started — but the state change under test is the
+        # production path).
         client.post(f"/api/traces/{sid}/pause")
-        session = client.app.state.session_manager.get(sid)
         session.samples.append(Sample(t=time.time(), rtt_ms=7.0))
 
         parsed = parse_prom(client.get("/metrics").text)
@@ -709,17 +709,11 @@ def test_metrics_endpoint_paused_session_state_label(tmp_path) -> None:
 
 def test_metrics_endpoint_persistent_and_name_labels(tmp_path) -> None:
     with TestClient(create_app(data_dir=tmp_path)) as client:
-        sid = client.post(
-            "/api/traces",
-            json={
-                "target": "127.0.0.1",
-                "interval_s": 60.0,
-                "name": "my-trace",
-                "persistent": True,
-            },
-        ).json()["id"]
+        session = client.app.state.session_manager.create(
+            "127.0.0.1", interval_s=60.0, name="my-trace", persistent=True
+        )
+        sid = session.id
         client.post(f"/api/traces/{sid}/pause")
-        session = client.app.state.session_manager.get(sid)
         session.samples.append(Sample(t=time.time(), rtt_ms=1.0))
 
         parsed = parse_prom(client.get("/metrics").text)
@@ -739,11 +733,11 @@ def test_metrics_endpoint_persistent_and_name_labels(tmp_path) -> None:
 def test_metrics_endpoint_label_escaping_via_unsafe_target(tmp_path) -> None:
     """An unsafe target string injected directly must be escaped in labels."""
     with TestClient(create_app(data_dir=tmp_path)) as client:
-        sid = client.post(
-            "/api/traces", json={"target": "127.0.0.1", "interval_s": 60.0}
-        ).json()["id"]
+        session = client.app.state.session_manager.create(
+            "127.0.0.1", interval_s=60.0
+        )
+        sid = session.id
         client.post(f"/api/traces/{sid}/pause")
-        session = client.app.state.session_manager.get(sid)
         # Inject a hostile target + name with backslash, quote, newline.
         nasty = 'evil\\host"name\ninjected'
         session.target = nasty

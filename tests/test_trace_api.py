@@ -155,11 +155,81 @@ def test_post_trace_409_when_session_cap_reached() -> None:
 
 
 # ---------------------------------------------------------- pause + resume
+#
+# Fixture isolation: POST /api/traces starts the REAL probe loop (the first
+# round fires before the first interval sleep) and the REAL discovery task
+# the moment it returns. On a fast Linux loopback a genuine ~0.05 ms ping
+# sample — and a ready route with hop rows from loopback traceroute — can
+# land in the server buffers before this test process issues its pause
+# request, so data-controlled fixtures then see samples/hops they never
+# injected. SessionManager takes its network boundaries as constructor-
+# injected functions; rebinding those same instance attributes BEFORE the
+# session is created swaps the boundary for cancellation-safe blocking
+# stand-ins while the manager lifecycle (create/start/pause/resume/cancel)
+# and every endpoint under test keep running production code. The marked
+# integration tests near the end of this file bypass this helper and still
+# exercise the real ping/traceroute binaries.
+
+
+async def _blocked_probe(_host: str, _timeout_s: float) -> float | None:
+    """Probe stand-in that never completes a round, so no sample can land.
+
+    The sleep propagates CancelledError, so the real pause/shutdown task
+    cancellation path stays exercised.
+    """
+    await asyncio.sleep(3600)
+    return None
+
+
+async def _blocked_discover(_target: str, _timeout_s: float = 90.0) -> list:
+    """Discovery stand-in that never resolves, so ``route_state`` stays
+    ``pending`` and no discovered-hop rows appear (target-only semantics)."""
+    await asyncio.sleep(3600)
+    return []
+
+
+async def _fast_resolve_name(_ip: str) -> None:
+    """Reverse-DNS stand-in: no resolver call (test_session.py convention)."""
+    return None
+
+
+async def _fast_resolve_target(target: str) -> tuple[str | None, str | None]:
+    """Forward-resolution stand-in: no ``getaddrinfo`` call, no suspension.
+
+    IP literals resolve to themselves; labels mutated by export tests use a
+    documentation address. Neither path suspends or performs real DNS.
+    """
+    from netplot.session import _is_ip_literal
+
+    return (target if _is_ip_literal(target) else "192.0.2.1"), None
+
+
+def _control_network_boundaries(client: TestClient) -> None:
+    """Bind the app's manager to the stand-ins above before any session
+
+    starts. These are the same attributes the SessionManager constructor
+    injects (probe_fn / discover_fn / resolve_name_fn), plus the
+    ``_resolve_target`` boundary the discovery task awaits; the app's
+    routes close over this very manager instance, so sessions created
+    afterwards probe/discover/resolve through the controlled boundaries.
+    Forward resolution is stubbed as well: not every session keeps an IP
+    literal target (tests may mutate ``session.target`` post-create), and
+    the production resolver would otherwise hit real DNS from inside the
+    discovery task.
+    """
+    manager = client.app.state.session_manager
+    manager._probe_fn = _blocked_probe
+    manager._discover_fn = _blocked_discover
+    manager._resolve_name_fn = _fast_resolve_name
+    manager._resolve_target = _fast_resolve_target
 
 
 def _create_then(
     client: TestClient, target: str = "127.0.0.1", interval_s: float = 2.0
 ):
+    # Swap the network boundary BEFORE the POST so the session starts with
+    # deterministic empty buffers; the lifecycle itself stays real.
+    _control_network_boundaries(client)
     r = client.post("/api/traces", json={"target": target, "interval_s": interval_s})
     assert r.status_code == 201
     return r.json()["id"]

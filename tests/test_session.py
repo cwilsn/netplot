@@ -965,8 +965,13 @@ def test_resume_restarts_discovery_cancelled_by_pause() -> None:
 
         return [RouteHop(index=1, ip="10.0.0.1")]
 
+    class ResolvedSessionManager(SessionManager):
+        # Isolate forward DNS so this test pauses during traceroute, not lookup.
+        async def _resolve_target(self, _target):
+            return "10.0.0.99", None
+
     async def run():
-        mgr = SessionManager(
+        mgr = ResolvedSessionManager(
             discover_fn=discover,
             resolve_name_fn=_fast_resolve_name,
             probe_fn=lambda *_a, **_k: _immediate_probe(),
@@ -989,3 +994,180 @@ def test_resume_restarts_discovery_cancelled_by_pause() -> None:
     session = asyncio.run(run())
     assert calls == 2
     assert session.route_state == "ready"
+
+
+def test_pause_during_pending_forward_dns_cancels_discovery_and_resume_restarts() -> None:
+    """Pause must stop discovery while forward DNS (getaddrinfo) is pending.
+
+    Regression for a real defect: ``_resolve_target`` used to swallow the
+    CancelledError raised into a pending ``loop.getaddrinfo``, so discovery
+    ran on into the traceroute await after pause had already cancelled it,
+    and ``pause()`` stalled waiting for a discovery that refused to stop.
+    Everything is event-gated — no real DNS, no sleeps.
+    """
+
+    async def run():
+        from netplot.engine import RouteHop
+
+        target_ip = "203.0.113.7"
+        loop = asyncio.get_running_loop()
+
+        dns_calls = 0
+        dns_entered = asyncio.Event()
+
+        async def fake_getaddrinfo(_host, _port, **_kwargs):
+            # Fake forward DNS. The first lookup parks forever (forward DNS
+            # pending — exactly the window pause must be able to interrupt);
+            # later lookups resolve immediately.
+            nonlocal dns_calls
+            dns_calls += 1
+            dns_entered.set()
+            if dns_calls == 1:
+                await loop.create_future()
+            return [(2, 1, 6, "", (target_ip, 0))]
+
+        discover_calls = 0
+        discover_entered = asyncio.Event()
+        discover_release = asyncio.Event()
+
+        async def fake_discover(_target, _timeout_s=90.0):
+            nonlocal discover_calls
+            discover_calls += 1
+            discover_entered.set()
+            if not discover_release.is_set():
+                # Only reachable when the pause cancellation was swallowed
+                # during the pending lookup: park like a real traceroute
+                # would, so pause cannot complete.
+                await loop.create_future()
+            return [RouteHop(index=1, ip="10.0.113.1")]
+
+        async def fake_probe(_host, _timeout_s):
+            return 1.0
+
+        mgr = SessionManager(
+            probe_fn=fake_probe,
+            discover_fn=fake_discover,
+            resolve_name_fn=_fast_resolve_name,
+        )
+        session = mgr.create("target.example", interval_s=60.0)
+
+        real_getaddrinfo = loop.getaddrinfo
+        loop.getaddrinfo = fake_getaddrinfo  # type: ignore[method-assign]
+        try:
+            await mgr.start(session)
+            first_discovery = session._discover_task
+            assert first_discovery is not None
+
+            # Deterministic rendezvous: discovery is parked inside the
+            # forward lookup, before traceroute has started.
+            await dns_entered.wait()
+            assert session.route_state == "pending"
+
+            pause_task = asyncio.create_task(mgr.pause(session))
+            entered_discovery = asyncio.ensure_future(discover_entered.wait())
+            done, _pending = await asyncio.wait(
+                [pause_task, entered_discovery],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if pause_task not in done:
+                # Defect path: the cancellation was swallowed during the
+                # pending lookup, discovery ran on into fake_discover, and
+                # pause is stuck awaiting it. Clean up so the loop can
+                # close, then fail loudly (this is the observed hang).
+                entered_discovery.cancel()
+                pause_task.cancel()
+                first_discovery.cancel()
+                await asyncio.gather(
+                    entered_discovery,
+                    pause_task,
+                    first_discovery,
+                    return_exceptions=True,
+                )
+                raise AssertionError(
+                    "pause() stalled: discovery continued into the "
+                    "traceroute await after its task was cancelled "
+                    "(CancelledError swallowed during pending forward DNS)"
+                )
+            entered_discovery.cancel()
+            try:
+                await entered_discovery
+            except asyncio.CancelledError:
+                pass
+
+            # Pause completed while DNS was pending: discovery was actually
+            # stopped at the lookup boundary (traceroute never started)...
+            assert discover_calls == 0
+            assert first_discovery.cancelled()
+            assert session.route_state == "pending"  # not misfiled as failed
+            assert session.state == "paused"
+            assert session.paused_at is not None
+            assert session._discovery_restart is True
+
+            # Resume restarts the cancelled discovery from scratch: a fresh
+            # lookup (now unblocked), a fresh discovery task, a ready route.
+            discover_release.set()
+            await mgr.resume(session)
+            second_discovery = session._discover_task
+            assert second_discovery is not None
+            assert second_discovery is not first_discovery
+            await second_discovery
+            assert dns_calls == 2
+            assert session.route_state == "ready"
+            assert session.target_ip == target_ip
+            assert session.target_dns is None
+            assert [hop.ip for hop in session.hops] == ["10.0.113.1"]
+            assert session.state == "running"
+            assert session.paused_at is None
+
+            await mgr.delete(session)
+        finally:
+            loop.getaddrinfo = real_getaddrinfo
+
+    asyncio.run(run())
+
+
+def test_resolve_target_swallows_ordinary_dns_failure_and_discovery_continues() -> None:
+    """A non-cancellation getaddrinfo failure stays best-effort.
+
+    ``target_ip``/``target_dns`` degrade to None, discovery still runs, and
+    the session reaches a ready route (target-only dedup simply skipped).
+    """
+
+    async def run():
+        from netplot.engine import RouteHop
+
+        loop = asyncio.get_running_loop()
+
+        async def failing_getaddrinfo(_host, _port, **_kwargs):
+            raise OSError("simulated resolver failure")
+
+        async def fake_discover(_target, _timeout_s=90.0):
+            return [RouteHop(index=1, ip="10.0.113.1")]
+
+        async def fake_probe(_host, _timeout_s):
+            return 1.0
+
+        mgr = SessionManager(
+            probe_fn=fake_probe,
+            discover_fn=fake_discover,
+            resolve_name_fn=_fast_resolve_name,
+        )
+        session = mgr.create("target.example", interval_s=60.0)
+
+        real_getaddrinfo = loop.getaddrinfo
+        loop.getaddrinfo = failing_getaddrinfo  # type: ignore[method-assign]
+        try:
+            await mgr.start(session)
+            discovery = session._discover_task
+            assert discovery is not None
+            await discovery
+            assert session.route_state == "ready"
+            assert session.target_ip is None
+            assert session.target_dns is None
+            assert [hop.ip for hop in session.hops] == ["10.0.113.1"]
+            await mgr.delete(session)
+        finally:
+            loop.getaddrinfo = real_getaddrinfo
+
+    asyncio.run(run())

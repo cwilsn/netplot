@@ -17,6 +17,7 @@ CSV export, and Prometheus metrics.
 Requirements: Docker (Engine 24+ with the Compose v2 plugin, or Docker
 Desktop). Private downloads also require the [GitHub CLI](https://cli.github.com/)
 (`gh`) and account access. No Git checkout, Python, or build toolchain is needed.
+The command examples use Bash (Linux/macOS, or WSL/Git Bash on Windows).
 
 ### 1. One-time: authenticate to GitHub and GHCR
 
@@ -229,6 +230,11 @@ Run the Python and JavaScript checks (the latter requires Node.js):
 python -m pytest
 node tests/test_app.js
 ```
+
+Data-sensitive metrics, history, and export fixtures must control probe and
+DNS dependencies before creating sessions; a live trace can collect a sample
+before an immediate pause. Keep real system-probe coverage in the marked
+integration tests and container smoke gates rather than weakening data assertions.
 
 ### Run from source
 
