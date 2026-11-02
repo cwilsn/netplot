@@ -1,0 +1,79 @@
+# Version control / IDE
+.git
+.gitignore
+.editorconfig
+
+# Python build artifacts & caches
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Tests, docs, screenshots — not needed to build the wheel
+tests/
+docs/
+
+# Local-only scratch
+.playwright-mcp/
+*.png
+*.jpg
+*.jpeg
+
+# Private runtime state (not the source settings.py/session.py modules)
+data/
+**/data/
+settings.json
+settings.json.*
+sessions.json
+sessions.json.*
+.settings.json.*
+.sessions.json.*
+**/settings.json
+**/settings.json.*
+**/sessions.json
+**/sessions.json.*
+**/.settings.json.*
+**/.sessions.json.*
+
+# Local environment and deployment configuration; preserve generic templates
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.*.sample
+!**/.env.example
+!**/.env.*.example
+!**/.env.sample
+!**/.env.*.sample
+config.local/
+*.local.env
+**/*.local.env
+compose.override.yml
+compose.override.yaml
+docker-compose.override.yml
+docker-compose.override.yaml
+**/compose.override.yml
+**/compose.override.yaml
+**/docker-compose.override.yml
+**/docker-compose.override.yaml
+
+# Network captures and exported samples
+captures/
+exports/
+*.pcap
+*.pcapng
+**/*.pcap
+**/*.pcapng
+
+# Keep uv.lock — it IS used by the Dockerfile build stage.
+# (Do NOT add uv.lock here.)

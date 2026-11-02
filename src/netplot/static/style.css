@@ -1,0 +1,1278 @@
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --ink: #1a1d21;
+  --ink-muted: #5b6470;
+  --rule: #d4d8de;
+  --rule-strong: #9aa3ad;
+  --green: #2c8f3e;
+  --green-bg: #d8efd6;
+  --yellow: #b07b00;
+  --yellow-bg: #fcefc4;
+  --red: #b3261e;
+  --red-bg: #f6d6d4;
+  --loss: #b3261e;
+  --header-bg: #e9ecef;
+  --header-ink: #1a1d21;
+  --row-stripe: #fafbfc;
+  --row-hover: #eef2f7;
+  --focus-ring: #2563eb;
+  --mono: ui-monospace, "SF Mono", "Menlo", "Consolas", "Liberation Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.35;
+  min-width: 900px;
+}
+
+a {
+  color: inherit;
+}
+
+/* ----------------------------------------------------------- top bar */
+
+.topbar {
+  background: var(--panel);
+  border-bottom: 1px solid var(--rule);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+/* Slice 6b focus caption: lives on its own row below the toolbar. */
+.focus-caption {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  padding-top: 2px;
+}
+
+.brand {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex: 1;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.field span {
+  font-weight: 500;
+}
+
+.field-narrow {
+  width: 130px;
+}
+
+/* Background-toggle checkbox sits in the toolbar alongside the other
+   PingPlotter-style controls. Inline label so the checkbox and "Background"
+   text share a single baseline; disabled (greyed) when no session is
+   active, matching the Reset/Export policy. */
+.field-checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 6px;
+  cursor: pointer;
+}
+
+.field-checkbox input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.field-checkbox input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+}
+
+.field-target {
+  flex: 0 1 320px;
+  min-width: 220px;
+}
+
+/* Play/pause side-by-side pair (PingPlotter reference). Raised, clearly
+   bordered controls so they read as buttons, not bare glyphs. */
+.btn-group {
+  display: inline-flex;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.btn-play,
+.btn-pause {
+  min-width: 42px;
+  min-height: 32px;
+  border-radius: 6px;
+  line-height: 1;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.btn-play:not(:disabled):active,
+.btn-pause:not(:disabled):active {
+  transform: translateY(1px);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.18);
+}
+
+.btn-play {
+  background: var(--green);
+  color: #fff;
+  border: 1px solid #247a33;
+  font-size: 16px;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+}
+
+.btn-play:not(:disabled):hover {
+  background: #247a33;
+  border-color: #1d6529;
+}
+
+.btn-pause {
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--rule-strong);
+  font-size: 14px;
+}
+
+.btn-pause:not(:disabled):hover {
+  background: var(--row-hover);
+  border-color: var(--ink-muted);
+}
+
+/* Target combobox: input + absolutely-positioned dropdown (free-text with a
+   recent-targets list, mirroring the PingPlotter target dropdown). */
+.target-combobox {
+  position: relative;
+}
+
+.target-combobox input {
+  width: 100%;
+}
+
+.target-history {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: var(--panel);
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+  max-height: 240px;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.target-history[hidden] {
+  display: none;
+}
+
+.target-history-item {
+  padding: 5px 10px;
+  cursor: pointer;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.target-history-item:hover,
+.target-history-item.active {
+  background: var(--row-hover);
+}
+
+input[type="text"],
+input[type="number"],
+select {
+  font: inherit;
+  padding: 5px 8px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--ink);
+  min-height: 28px;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+select:focus {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -1px;
+  border-color: var(--focus-ring);
+}
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--ink-muted) 50%),
+    linear-gradient(135deg, var(--ink-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 12px,
+    calc(100% - 9px) 12px;
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 26px;
+  cursor: pointer;
+}
+
+select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+input#target {
+  min-width: 280px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.btn {
+  font: inherit;
+  padding: 5px 14px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  min-height: 28px;
+  font-weight: 500;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: #1f6feb;
+  color: #fff;
+  border-color: #1f6feb;
+}
+
+.btn-primary:not(:disabled):hover {
+  background: #1858c4;
+}
+
+.btn-secondary {
+  background: var(--panel);
+  color: var(--ink);
+  border-color: var(--rule-strong);
+}
+
+.btn-secondary:not(:disabled):hover {
+  background: var(--row-hover);
+}
+
+.status {
+  font-size: 13px;
+  color: var(--ink-muted);
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.status.state-error {
+  color: var(--red);
+  font-weight: 500;
+}
+
+.status.state-pending {
+  color: var(--yellow);
+}
+
+.status.state-running {
+  color: var(--green);
+}
+
+/* ----------------------------------------------------------- tab bar */
+/* PingPlotter-style multi-trace tabs: one tab per live trace, plus a "+"
+   button to focus a fresh (unsaved) tab. Active tab highlighted; close ×
+   per tab; lives between the toolbar and the main content. */
+.tab-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--rule);
+  padding: 4px 12px 0;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 9;
+}
+
+.tab-bar:empty {
+  display: none;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  padding: 5px 8px 6px;
+  border: 1px solid var(--rule);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  background: var(--row-stripe);
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-family: var(--mono);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.tab:hover {
+  background: var(--row-hover);
+  color: var(--ink);
+}
+
+.tab[aria-selected="true"] {
+  /* PingPlotter-style: the active tab is a solid blue fill so the selection
+     is unmistakable against the neutral inactive tabs. */
+  background: #1f6feb;
+  color: #fff;
+  border-color: #1858c4;
+  /* Visually connect the tab to the content panel below by overlapping the
+     main's top border. */
+  margin-bottom: -1px;
+  padding-bottom: 7px;
+  position: relative;
+  z-index: 1;
+}
+
+.tab[aria-selected="true"]:hover {
+  background: #1858c4;
+  color: #fff;
+}
+
+.tab[aria-selected="true"] .tab-close {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.tab[aria-selected="true"] .tab-close:hover {
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+
+.tab.is-idle {
+  font-style: italic;
+}
+
+.tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Persistent (background) collection marker. A small ⇄ glyph precedes the
+   label so an operator can tell at a glance which tabs survive a server
+   restart. Styled inline (no extra colour) so it reads cleanly against
+   both the inactive tab and the solid-blue active tab. */
+.tab-marker {
+  font-weight: 600;
+  opacity: 0.85;
+  user-select: none;
+}
+
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.tab-close:hover {
+  background: var(--red-bg);
+  color: var(--red);
+}
+
+.tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  padding: 4px 8px;
+  border: 1px dashed var(--rule-strong);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tab-new:hover {
+  background: var(--row-hover);
+  color: var(--ink);
+  border-style: solid;
+}
+
+/* ----------------------------------------------------------- main */
+
+.main {
+  padding: 14px 16px 32px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.route-banner {
+  background: var(--yellow-bg);
+  color: var(--yellow);
+  border: 1px solid #ecd195;
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.route-banner.route-failed {
+  background: var(--red-bg);
+  color: var(--red);
+  border-color: #e7b6b3;
+}
+
+.route-banner.route-ready {
+  background: var(--green-bg);
+  color: var(--green);
+  border-color: #b4d8a8;
+  display: none;
+}
+
+/* ----------------------------------------------------------- hop table */
+
+.table-section {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+thead th {
+  background: var(--header-bg);
+  color: var(--header-ink);
+  text-align: left;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--rule-strong);
+  /* Keep the header in normal table flow. A sticky table-cell header can
+     paint over the first body rows in WebKit, making those rows impossible
+     to double-click (the primary Slice 5 interaction). */
+}
+
+tbody td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+tbody tr:nth-child(even) {
+  background: var(--row-stripe);
+}
+
+tbody tr:hover {
+  background: var(--row-hover);
+}
+
+.empty-row td {
+  text-align: center;
+  color: var(--ink-muted);
+  padding: 24px 8px;
+  font-style: italic;
+}
+
+/* Column widths — graph is the flexible remainder. */
+.col-status { width: 36px; }
+.col-hop { width: 50px; }
+.col-count { width: 70px; }
+.col-ip { width: 150px; }
+.col-dns { width: 220px; }
+.col-avg { width: 70px; }
+.col-min { width: 70px; }
+.col-cur { width: 80px; }
+.col-pl { width: 70px; }
+.col-graph { width: auto; min-width: 220px; }
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+}
+
+.num-th {
+  text-align: right;
+}
+
+/* Hide a header label visually while keeping it for screen readers. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The Graph column header shows a small label and the live axis-max value
+   (right-aligned) so the reader always sees the scale ceiling. */
+th.col-graph {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.graph-axis-max {
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--ink-muted);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+}
+
+td.cell-cur.ok { color: var(--ink); }
+td.cell-cur.loss { color: var(--loss); font-weight: 600; }
+
+td.cell-pl.low { color: var(--ink-muted); }
+td.cell-pl.warn { color: var(--yellow); }
+td.cell-pl.high { color: var(--red); font-weight: 600; }
+
+td.cell-ip,
+td.cell-dns {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+td.cell-ip.silent,
+td.cell-dns.silent {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
+/* ----------------------------------------------------------- graph column */
+/*
+ * PingPlotter-faithful anatomy: zones derive from the live
+ * axisMax (set per-render in app.js), with a thin whisker min->max, a navy
+ * ✕ marker at the avg, and an open circle ○ at the cur value. A separate
+ * SVG overlay (.graph-connector below the table-section) draws the red
+ * avg polyline across the whole column.
+ */
+
+.graph {
+  position: relative;
+  height: 20px;
+  width: 100%;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+/* Background zones — positions set inline by renderGraph (PURE.zonePercents). */
+.graph-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+.graph-zone-green { background: rgba(44, 143, 62, 0.14); }
+.graph-zone-yellow { background: rgba(176, 123, 0, 0.14); }
+.graph-zone-red { background: rgba(179, 38, 30, 0.14); }
+
+/* Thin dark whisker line spanning min->max. */
+.graph-whisker {
+  position: absolute;
+  top: 50%;
+  height: 2px;
+  background: #1a1d21;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+/* Small vertical end caps at the whisker ends. */
+.graph-cap {
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: 8px;
+  background: #1a1d21;
+  transform: translate(-1px, -50%);
+  pointer-events: none;
+}
+
+/* Navy ✕ marker at the average. */
+.graph-avg {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: #1d3a8a;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Open circle ○ at the current value. Filled with the threshold color but
+   rendered with a white inner via box-shadow so it reads as "open". */
+.graph-cur {
+  position: absolute;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  border: 1.5px solid var(--ink);
+  background: #fff;
+  pointer-events: none;
+}
+.graph-cur.green { border-color: var(--green); background: #fff; }
+.graph-cur.yellow { border-color: var(--yellow); background: #fff; }
+.graph-cur.red { border-color: var(--red); background: #fff; }
+
+/* Loss hatch overlay. Anchored at the right edge; width is proportional to
+   PL% so a 100%-loss row fills the cell. */
+.graph-loss {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--red),
+    var(--red) 2px,
+    rgba(179, 38, 30, 0.5) 2px,
+    rgba(179, 38, 30, 0.5) 4px
+  );
+  opacity: 0.7;
+}
+
+.graph-empty {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  height: 20px;
+  color: var(--ink-muted);
+  font-size: 11px;
+  padding-left: 4px;
+}
+
+/* ----- status column --------------------------------------------------- */
+
+.cell-status {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  vertical-align: middle;
+  background: transparent;
+}
+/* Class names match what renderRow emits: "status-dot status-<kind>".
+   The prior compound form never matched the emitted standalone classes, so
+   dots rendered transparent. */
+.status-green { background: var(--green); }
+.status-red { background: var(--red); }
+.status-hollow {
+  background: transparent;
+  border: 1.5px solid var(--ink-muted);
+}
+
+.status-target-glyph {
+  font-size: 12px;
+  vertical-align: middle;
+  margin-right: 2px;
+}
+
+/* Target glyph shown in the Hop cell of the appended hop-0 target row
+   (hop 0 is the target stream, not a numbered route hop). */
+.cell-hop-target-glyph {
+  font-size: 13px;
+  vertical-align: middle;
+}
+
+/* Final-target row emphasis (bold text). */
+tr.row-target td {
+  font-weight: 600;
+}
+
+/* ----- graph legend + axis-max label ---------------------------------- */
+/*
+ * Legend bar anatomy (Avg latency):
+ *   .graph-legend-wrap  — positioning context (overflow visible) so the
+ *                         boundary ticks (below the bar) and the target
+ *                         marker's contrasting outline are never clipped.
+ *   .graph-legend-bar   — the gradient bar itself, overflow:hidden clips
+ *                         ONLY the zone fills to the rounded corners.
+ *   .graph-legend-markers — absolutely covers the bar's box; holds one
+ *                         diamond marker per hop (target marker emphasized).
+ *   .graph-legend-tick  — "100ms"/"200ms" boundary labels under the bar.
+ *
+ * The legend scale is decoupled from the row graph-column axis (floored at
+ * 300 ms) so all three zones stay at truthful, legible proportions; see the
+ * .legend-marker / .graph-legend-tick rules and renderGraphColumnChrome.
+ */
+
+.graph-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 4px 8px 16px;
+  font-size: 11px;
+  color: var(--ink-muted);
+  border-bottom: 1px solid var(--rule);
+  background: var(--header-bg);
+}
+
+.graph-legend-title {
+  font-weight: 600;
+  color: var(--header-ink);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.graph-legend-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.graph-legend-bar {
+  position: relative;
+  display: block;
+  width: 180px;
+  height: 10px;
+  border-radius: 2px;
+  overflow: hidden;
+  border: 1px solid var(--rule-strong);
+  background: #fff;
+}
+
+.graph-legend-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+.legend-green { background: rgba(44, 143, 62, 0.55); }
+.legend-yellow { background: rgba(176, 123, 0, 0.55); }
+.legend-red { background: rgba(179, 38, 30, 0.55); }
+
+/* Boundary tick labels: positioned at the wrap's bottom edge (top: 100%) so
+   they sit just under the bar, centered on their zone boundary (left: N%).
+   The ::before draws a short tick mark rising into the bar's bottom edge. */
+.graph-legend-tick {
+  position: absolute;
+  top: 100%;
+  transform: translateX(-50%);
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+.graph-legend-tick::before {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  width: 1px;
+  height: 3px;
+  background: var(--ink-muted);
+  transform: translateX(-0.5px);
+}
+
+/* Per-hop avg marker layer. Absolutely covers the bar's box but is a SIBLING
+   of the (overflow: hidden) bar inside the wrap, so the target marker's
+   contrasting outline and the vertical-fan overflow are never clipped.
+   aria-hidden on the layer keeps screen readers off the decorative spans;
+   the browser still surfaces each marker's title tooltip on hover. */
+.graph-legend-markers {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 10px;
+}
+
+/* One diamond per hop, positioned at the hop's current Avg. Lane-based top
+   offset (set inline by renderLegendMarkers) fans near-coincident markers
+   apart so they remain distinguishable. */
+.legend-marker {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  transform: translate(-50%, -50%) rotate(45deg);
+  background: var(--ink);
+  border: 1px solid #fff;
+}
+
+/* Target-row marker: larger, red fill with a dark contrasting outline so it
+   stands out against the other hop markers. */
+.legend-marker-target {
+  width: 9px;
+  height: 9px;
+  background: var(--red);
+  border: 1.5px solid var(--ink);
+  z-index: 2;
+}
+
+/* ----- graph connector overlay ---------------------------------------- */
+/*
+ * One absolutely-positioned SVG across the graph column, sized in pixels by
+ * renderConnector after each table paint. The path d-attribute is rebuilt
+ * every render so it tracks row centers even with variable row count / the
+ * emphasized target row.
+ */
+
+.table-section {
+  position: relative;
+}
+
+.graph-connector {
+  position: absolute;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 2;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+}
+
+.graph-connector-path {
+  fill: none;
+  stroke: var(--red);
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  opacity: 0.85;
+}
+
+
+/* ----------------------------------------------------------- footer */
+
+.footer {
+  margin-top: 12px;
+  padding: 8px 4px;
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+}
+
+/* ----------------------------------------------------------- timelines (Slice 5) */
+
+.timelines-section {
+  margin-top: 14px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.timelines-section[hidden] {
+  display: none;
+}
+
+.timelines-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.focus-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(37, 99, 235, 0.12);
+  border: 1px solid rgba(37, 99, 235, 0.55);
+  color: #1d4ed8;
+  border-radius: 12px;
+  padding: 2px 6px 2px 10px;
+  font-size: 12px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.focus-chip[hidden] {
+  display: none;
+}
+
+.focus-clear {
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(37, 99, 235, 0.25);
+  color: #1d4ed8;
+  cursor: pointer;
+}
+
+.focus-clear:hover {
+  background: rgba(37, 99, 235, 0.45);
+  color: #fff;
+}
+
+.timelines-hint {
+  margin-left: auto;
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+
+.timeline-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.timeline-panel {
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.timeline-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--rule);
+  font-size: 12px;
+}
+
+.timeline-label {
+  font-weight: 600;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.timeline-stats {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-close {
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--rule-strong);
+  border-radius: 3px;
+  background: var(--panel);
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.timeline-close:hover {
+  background: var(--row-hover);
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.timeline-close[hidden] {
+  display: none;
+}
+
+/* Slice 6c — per-panel range dropdown (top-right of each timeline
+   header, PingPlotter Cloud shows "10 minutes ▾" per graph). Mirrors
+   the toolbar <select> appearance: smaller, monospace. */
+.timeline-range {
+  margin-left: auto;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 22px 2px 8px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 3px;
+  background: var(--panel);
+  color: var(--ink);
+  min-height: 0;
+  cursor: pointer;
+}
+
+.timeline-range:focus {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -1px;
+  border-color: var(--focus-ring);
+}
+
+/* When a range dropdown is present the close button should sit just to
+   its right rather than pushing to the panel edge. */
+.timeline-panel .timeline-range + .timeline-close {
+  margin-left: 0;
+}
+
+/* Slice 6c — body wrapper holds the canvas plus rotated axis labels. */
+.timeline-body {
+  position: relative;
+  /* Reserve gutters for the rotated labels so they don't overlap the
+     canvas's own y-axis tick labels or the right-edge plot area. */
+  padding: 0 18px;
+}
+
+.timeline-canvas {
+  display: block;
+  width: 100%;
+  height: 140px;
+  cursor: crosshair;
+}
+
+/* Rotated axis labels (PingPlotter Cloud reference anatomy):
+   - "Latency (ms)" runs vertically along the left edge of each graph.
+   - "Packet Loss %" runs vertically along the right edge in red.
+   Both read bottom-to-top. Implemented as DOM (not canvas text) so
+   they stay crisp under DPR zoom and are assertable directly. */
+.timeline-axis-label {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  /* vertical-rl makes text flow top-to-bottom; rotate(180) flips it so
+     the first character sits at the bottom (reads bottom-to-top). */
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+.timeline-latency-label {
+  left: 2px;
+}
+
+.timeline-loss-label {
+  right: 2px;
+  color: var(--red);
+  font-weight: 600;
+}
+
+/* ----- ICMP non-responsive (neutral presentation) ---------------------- */
+/* An intermediate hop that never replied in the current trace is styled
+   neutral gray — counts/loss stay truthful, only the alarm color goes. */
+
+.status-dot.status-gray {
+  background: var(--rule-strong);
+}
+
+.cell-cur.nr {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
+.graph-loss.nr {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--rule-strong),
+    var(--rule-strong) 2px,
+    rgba(154, 163, 173, 0.5) 2px,
+    rgba(154, 163, 173, 0.5) 4px
+  );
+}
+
+/* ----- throughput overlay (primary timeline) --------------------------- */
+
+.timeline-throughput {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.timeline-tp-legend {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.timeline-tp-legend .tp-in { color: #2563eb; font-weight: 600; }
+.timeline-tp-legend .tp-out { color: #d97706; font-weight: 600; }
+.timeline-tp-legend .tp-unit { color: var(--ink-muted); }
+.timeline-tp-legend.tp-error { color: var(--red); }
+
+/* ----- settings dialog -------------------------------------------------- */
+
+.settings-dialog {
+  border: 1px solid var(--rule-strong);
+  border-radius: 8px;
+  padding: 18px 20px;
+  min-width: 460px;
+  max-width: 560px;
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.settings-dialog::backdrop {
+  background: rgba(26, 29, 33, 0.35);
+}
+
+.settings-dialog h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.settings-dialog h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.settings-section {
+  margin-bottom: 16px;
+}
+
+.settings-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.settings-dialog textarea {
+  width: 100%;
+  min-height: 104px;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  resize: vertical;
+}
+
+.settings-field {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.settings-field input {
+  display: block;
+  width: 100%;
+  margin-top: 2px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  padding: 4px 6px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+}
+
+.settings-status {
+  min-height: 1.2em;
+  font-size: 12px;
+  color: var(--red);
+  margin-bottom: 8px;
+}
+
+.settings-status.loading {
+  color: var(--ink-muted);
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}

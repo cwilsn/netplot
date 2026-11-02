@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>netplot</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1 class="brand">netplot</h1>
+      <form id="trace-form" class="controls" autocomplete="off">
+        <div class="btn-group" role="group" aria-label="Trace control">
+          <button
+            id="btn-play"
+            type="submit"
+            class="btn btn-play"
+            aria-label="Start trace"
+          >▶</button>
+          <button
+            id="btn-pause"
+            type="button"
+            class="btn btn-pause"
+            disabled
+            aria-label="Pause trace"
+          >■</button>
+        </div>
+        <label class="field field-target">
+          <span>Target</span>
+          <div class="target-combobox">
+            <input
+              id="target"
+              name="target"
+              type="text"
+              placeholder="example.com or 1.2.3.4"
+              autocomplete="off"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded="false"
+              aria-controls="target-history"
+              required
+            />
+            <div
+              id="target-history"
+              class="target-history"
+              role="listbox"
+              aria-label="Recent targets"
+              hidden
+            ></div>
+          </div>
+        </label>
+        <label class="field field-narrow">
+          <span>Interval</span>
+          <select id="interval" name="interval" required>
+            <option value="1">1 second</option>
+            <option value="2.5" selected>2.5 seconds</option>
+            <option value="5">5 seconds</option>
+            <option value="10">10 seconds</option>
+            <option value="30">30 seconds</option>
+            <option value="60">60 seconds</option>
+          </select>
+        </label>
+        <label class="field field-narrow">
+          <span>Focus</span>
+          <select id="focus-window" name="focus-window">
+            <option value="auto" selected>Auto</option>
+            <option value="60">1 minute</option>
+            <option value="300">5 minutes</option>
+            <option value="600">10 minutes</option>
+          </select>
+        </label>
+        <label class="field field-narrow">
+          <span>Packet</span>
+          <select id="packet-type" name="packet-type" disabled>
+            <option value="icmp" selected>ICMP</option>
+          </select>
+        </label>
+        <label class="field field-checkbox" title="Keep this trace running across server restarts (saved to disk)">
+          <input id="background-toggle" name="background" type="checkbox" disabled />
+          <span>Background</span>
+        </label>
+        <label class="field field-checkbox" id="mask-toggle-label" title="Replace DNS names of internal-IP hosts with a neutral alias for screenshots (display only — IPs, API and CSV data are unchanged)">
+          <input id="mask-toggle" name="mask" type="checkbox" />
+          <span>Mask internal DNS</span>
+        </label>
+        <button id="reset" type="button" class="btn btn-secondary" disabled>Reset</button>
+        <button id="export" type="button" class="btn btn-secondary" disabled>Export</button>
+        <button
+          id="btn-settings"
+          type="button"
+          class="btn btn-secondary"
+          aria-label="Open settings"
+          title="Settings: internal IP ranges and InfluxDB throughput overlay"
+        >⚙</button>
+        <span id="status" class="status" aria-live="polite">Idle</span>
+      </form>
+      <div id="focus-caption" class="focus-caption" aria-live="polite">Focus: —</div>
+    </header>
+
+    <nav id="tab-bar" class="tab-bar" aria-label="Open traces" role="tablist">
+      <!-- Tabs (one per live trace + the "+" button) are rendered by app.js. -->
+    </nav>
+
+    <main class="main">
+      <section id="route-banner" class="route-banner" hidden></section>
+
+      <section class="table-section">
+        <div id="graph-legend" class="graph-legend" aria-label="Latency zone legend">
+          <span class="graph-legend-title">Avg latency</span>
+          <span id="graph-legend-wrap" class="graph-legend-wrap">
+            <span id="graph-legend-bar" class="graph-legend-bar">
+              <span id="graph-legend-green" class="graph-legend-zone legend-green"></span>
+              <span id="graph-legend-yellow" class="graph-legend-zone legend-yellow"></span>
+              <span id="graph-legend-red" class="graph-legend-zone legend-red"></span>
+            </span>
+            <span
+              id="graph-legend-markers"
+              class="graph-legend-markers"
+              aria-hidden="true"
+            ></span>
+            <span id="graph-legend-tick-green" class="graph-legend-tick tick-green">100ms</span>
+            <span id="graph-legend-tick-yellow" class="graph-legend-tick tick-yellow">200ms</span>
+          </span>
+        </div>
+        <table id="hop-table" aria-label="Per-hop latency table">
+          <thead>
+            <tr>
+              <th scope="col" class="col-status"><span class="visually-hidden">Status</span></th>
+              <th scope="col" class="col-hop num">Hop</th>
+              <th scope="col" class="col-count num">Count</th>
+              <th scope="col" class="col-ip">IP</th>
+              <th scope="col" class="col-dns">DNS</th>
+              <th scope="col" class="col-avg num">Avg</th>
+              <th scope="col" class="col-min num">Min</th>
+              <th scope="col" class="col-cur num">Cur</th>
+              <th scope="col" class="col-pl num">PL%</th>
+              <th scope="col" class="col-graph">
+                <span class="col-graph-label">Graph</span>
+                <span id="graph-axis-max" class="graph-axis-max">201ms</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody id="hop-table-body">
+            <tr class="empty-row" id="empty-row">
+              <td colspan="10">No trace running. Enter a target and press Start.</td>
+            </tr>
+          </tbody>
+        </table>
+        <svg id="graph-connector" class="graph-connector" aria-hidden="true"></svg>
+      </section>
+
+      <section
+        id="timelines-section"
+        class="timelines-section"
+        aria-label="Per-hop latency timeline graphs"
+        hidden
+      >
+        <div class="timelines-toolbar">
+          <div id="focus-chip" class="focus-chip" hidden>
+            <span id="focus-chip-text">Focus: --</span>
+            <button
+              type="button"
+              id="focus-clear"
+              class="focus-clear"
+              aria-label="Clear focus window"
+            >×</button>
+          </div>
+          <span class="timelines-hint">Drag a timeline to focus · Double-click a hop row to add a timeline</span>
+        </div>
+        <div id="timeline-stack" class="timeline-stack"></div>
+      </section>
+
+      <footer class="footer">
+        <span id="status-line">samples 0 · elapsed 0s · last round —</span>
+      </footer>
+    </main>
+
+    <dialog id="settings-dialog" class="settings-dialog" aria-label="Settings">
+      <form id="settings-form" method="dialog" autocomplete="off">
+        <h2>Settings</h2>
+        <section class="settings-section">
+          <h3>Internal IP ranges</h3>
+          <p class="settings-hint">
+            CIDRs whose hosts count as internal (one per line). The
+            <em>Mask internal DNS</em> toolbar toggle replaces DNS names of
+            these hosts with a neutral alias — display only; IPs, API and CSV
+            data are unchanged.
+          </p>
+          <textarea id="settings-cidrs" rows="5" spellcheck="false"></textarea>
+          <button id="settings-cidrs-default" type="button" class="btn btn-secondary">
+            Reset to defaults
+          </button>
+        </section>
+        <section class="settings-section">
+          <h3>InfluxDB throughput overlay</h3>
+          <p class="settings-hint">
+            Optional InfluxDB 1.x source for the timeline throughput overlay
+            (interface counters, no authentication). Leave the URL empty to
+            disable. No credentials are stored or sent.
+          </p>
+          <label class="settings-field">URL
+            <input id="settings-influx-url" type="text" placeholder="http://influx-host:8086 (empty = disabled)" />
+          </label>
+          <label class="settings-field">Database
+            <input id="settings-influx-db" type="text" placeholder="database name (e.g. telegraf)" />
+          </label>
+          <label class="settings-field">Interface
+            <input id="settings-influx-interface" type="text" placeholder="interface tag (e.g. eth0)" />
+          </label>
+          <label class="settings-field">Host tag (optional)
+            <input id="settings-influx-host" type="text" placeholder="only if the measurement carries multiple hosts" />
+          </label>
+        </section>
+        <div id="settings-status" class="settings-status" aria-live="polite"></div>
+        <menu class="settings-actions">
+          <button id="settings-cancel" type="button" class="btn btn-secondary">Cancel</button>
+          <button id="settings-save" type="submit" class="btn btn-play">Save</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

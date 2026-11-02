@@ -1,0 +1,15 @@
+services:
+  netplot:
+    build: .
+    image: netplot:dev
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    # Persistent (background) sessions live in NETPLOT_DATA_DIR=/data (set
+    # in the Dockerfile). Mount a named volume so they survive container
+    # recreation; without it persistence is per-process only.
+    volumes:
+      - netplot-data:/data
+
+volumes:
+  netplot-data:

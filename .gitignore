@@ -1,0 +1,40 @@
+.DS_Store
+.venv/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+.playwright-mcp/
+
+# Private runtime state (never ignore the source settings.py/session.py modules)
+/data/
+settings.json
+settings.json.*
+sessions.json
+sessions.json.*
+.settings.json.*
+.sessions.json.*
+
+# Local environment and deployment configuration; generic templates may be tracked
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.*.sample
+/config.local/
+*.local.env
+compose.override.yml
+compose.override.yaml
+docker-compose.override.yml
+docker-compose.override.yaml
+
+# Network captures, exported samples, and local screenshots
+/captures/
+/exports/
+*.pcap
+*.pcapng
