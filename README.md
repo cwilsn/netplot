@@ -9,8 +9,8 @@ CSV export, and Prometheus metrics.
 Clone the source repository:
 
 ```bash
-git clone https://github.com/jschert/netplot-shareable.git
-cd netplot-shareable
+git clone https://github.com/jschert/netplot.git
+cd netplot
 ```
 
 ## Development
