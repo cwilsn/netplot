@@ -581,7 +581,11 @@ def _mgr_with_hops(
             return await probe_fn(host, _timeout_s)
         return 1.0
 
-    return SessionManager(
+    class ResolvedSessionManager(SessionManager):
+        async def _resolve_target(self, _target):
+            return target_ip, None
+
+    return ResolvedSessionManager(
         probe_fn=fake_probe,
         discover_fn=fake_discover,
         resolve_name_fn=_fast_resolve_name,
@@ -787,10 +791,12 @@ def test_target_dedup_when_final_hop_equals_target() -> None:
     async def run():
         from netplot.engine import RouteHop
 
-        mgr = _mgr_with_hops([RouteHop(index=1, ip="127.0.0.1")], probe_fn=fake_probe)
+        mgr = _mgr_with_hops(
+            [RouteHop(index=1, ip="127.0.0.1")],
+            probe_fn=fake_probe,
+            target_ip="127.0.0.1",
+        )
         session = mgr.create("127.0.0.1", interval_s=0.05)
-        # Force target_ip to match the route's only hop so dedup applies.
-        session.target_ip = "127.0.0.1"
         await mgr.start(session)
         # Let at least one round fire after discovery completes.
         await asyncio.sleep(0.2)
@@ -863,9 +869,22 @@ def test_silent_hop_records_loss_samples_each_round() -> None:
             target_ip="10.0.0.99",  # distinct from final hop -> target also probed
         )
         session = mgr.create("target", interval_s=0.05)
-        await mgr.start(session)
-        await asyncio.sleep(0.2)
-        await mgr.pause(session)
+        events = session.subscribe()
+        try:
+            await mgr.start(session)
+
+            async def wait_for_silent_hop_round():
+                while True:
+                    event = await events.get()
+                    if isinstance(event, RoundEvent) and any(
+                        result.hop == 2 for result in event.results
+                    ):
+                        return
+
+            await asyncio.wait_for(wait_for_silent_hop_round(), timeout=2.0)
+        finally:
+            await mgr.pause(session)
+            session.unsubscribe(events)
         return session
 
     session = asyncio.run(run())
