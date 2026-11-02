@@ -1,13 +1,35 @@
+# End-user Compose file: PULLS the published image from GHCR.
+#
+# Nothing is built here — no source checkout, Git, or Python toolchain is
+# needed. The image is private, so a one-time `docker login ghcr.io` is
+# required; see the README "Quick Start" for the authenticated setup.
+#
+#   docker compose up -d
+#
+# Configuration via environment variables (or a .env file next to this
+# file so they stick):
+#
+#   NETPLOT_VERSION       image tag         (default: latest)
+#   NETPLOT_BIND_ADDRESS  host interface    (default: 127.0.0.1)
+#   NETPLOT_PORT          host port         (default: 8000)
+#
+# The application has NO authentication: the loopback default is
+# deliberate. Bind the LAN explicitly (NETPLOT_BIND_ADDRESS) only on
+# networks you fully trust — see the README before doing so.
+#
+# Developers building from source: use the explicit override instead —
+#   docker compose -f docker-compose.yml -f compose.build.yml up -d --build
+# A bare `docker compose up` must keep pulling the published image.
 services:
   netplot:
-    build: .
-    image: netplot:dev
+    image: ghcr.io/jschert/netplot:${NETPLOT_VERSION:-latest}
     ports:
-      - "8000:8000"
+      - "${NETPLOT_BIND_ADDRESS:-127.0.0.1}:${NETPLOT_PORT:-8000}:8000"
     restart: unless-stopped
-    # Persistent (background) sessions live in NETPLOT_DATA_DIR=/data (set
-    # in the Dockerfile). Mount a named volume so they survive container
-    # recreation; without it persistence is per-process only.
+    # Persistent state lives in NETPLOT_DATA_DIR=/data (set in the
+    # Dockerfile). The named volume keeps settings.json and background
+    # session definitions across container recreation and upgrades;
+    # sample history is never persisted.
     volumes:
       - netplot-data:/data
 

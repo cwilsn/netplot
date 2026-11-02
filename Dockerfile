@@ -52,7 +52,16 @@ RUN uv build --wheel --out-dir /tmp/wheels
 # ─── runtime stage ──────────────────────────────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim AS runtime
 
-LABEL org.opencontainers.image.title="netplot" \
+# OCI source annotation. Setting org.opencontainers.image.source lets GHCR
+# associate the pushed image with this repository: a package created on
+# first push inherits the repository's private access instead of sitting
+# unlinked (and unassociatable) in the registry. CI passes the exact
+# repository URL as a build-arg; the default covers plain local
+# `docker build .` followed by a manual push.
+ARG NETPLOT_SOURCE_URL=https://github.com/jschert/netplot
+
+LABEL org.opencontainers.image.source="${NETPLOT_SOURCE_URL}" \
+      org.opencontainers.image.title="netplot" \
       org.opencontainers.image.description="PingPlotter-style network latency and packet-loss dashboard (FastAPI + ping/traceroute)." \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.license="MIT"

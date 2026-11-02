@@ -1,0 +1,552 @@
+# Release pipeline for the private ghcr.io/jschert/netplot image.
+#
+# Maintainer process (documented for README by the parent integration):
+#   1. CI green on main (this is the same test job re-run here).
+#   2. Push a stable tag:  git tag v0.1.0 && git push origin v0.1.0
+#   3. This workflow builds BOTH linux/amd64 and linux/arm64, runs a real
+#      container smoke test on each architecture, and only then publishes
+#      ONE multi-arch manifest as ghcr.io/jschert/netplot:<X.Y.Z> and
+#      ghcr.io/jschert/netplot:latest.
+#
+# Artifact integrity — publish the tested bytes, never a rebuild:
+#   The publish job does NOT build anything. Each build-and-smoke leg
+#   exports the exact image it smoked (docker save tarball + its sha256 +
+#   the image's local config digest) as a workflow artifact; publish
+#   downloads those artifacts, verifies the sha256 and the config digest
+#   of the reloaded image, pushes the reloaded bytes to per-architecture
+#   staging tags, and assembles the X.Y.Z + latest manifest lists from
+#   those staging tags' immutable registry digests. There is no step
+#   between the smoke test and publication that could produce different
+#   bytes: layer-cache reuse (which is not a byte-identity guarantee) is
+#   never trusted to make "rebuilt from the same source" equal "the image
+#   that was tested".
+#
+# Publishing gates (publish needs all of these):
+#   - guard: the tag is a stable vX.Y.Z (no -rc/-beta suffixes; non-stable
+#     vX.Y.Z-* tags run tests + smoke but never publish).
+#   - test: the full Python + JS suite.
+#   - build-and-smoke: BOTH architectures' images passed the runtime
+#     smoke (health, static assets, real loopback ping through the API,
+#     persistence across container recreation, non-root runtime) and were
+#     uploaded as verified artifacts.
+#
+# The staging tags (staging-<X.Y.Z>-<amd64|arm64>) are implementation
+# details of this handoff; no consumer-facing version/latest tag moves
+# until every gate above has passed.
+#
+# After the publish job moves the consumer tags, the consumer-gate job
+# replays the documented one-file install path as a brand-new user would:
+# it downloads THIS tag's docker-compose.yml from the private repository
+# with the short-lived job token (no checkout, no build), writes a .env
+# pinning the released X.Y.Z + an ephemeral loopback port, and runs
+# docker compose pull + up -d --wait against the just-published private
+# image. It then proves the package has NOT become anonymously pullable
+# (anonymous registry-denial probe + package metadata when the job token
+# may read it). Nothing in the gate uses a PAT or account-wide secret:
+# GITHUB_TOKEN only, with contents:read/packages:read.
+#
+# This workflow only ever runs on tag pushes in this repository — it has no
+# pull_request trigger, so a PR can never publish an image.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+# Serialize releases: two tag pushes must never race the :latest / vX.Y.Z
+# manifest assembly. The group is fixed (not per-tag) so any concurrent
+# release run queues behind the one currently publishing; nothing is
+# cancelled mid-publish.
+concurrency:
+  group: netplot-release
+  cancel-in-progress: false
+
+# Least privilege by default; the publish job escalates to packages:write.
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Tag guard
+    runs-on: ubuntu-latest
+    outputs:
+      stable: ${{ steps.tag.outputs.stable }}
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+    steps:
+      - name: Validate tag shape
+        id: tag
+        run: |
+          ref="${GITHUB_REF_NAME}"
+          if [[ "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "stable=true" >> "$GITHUB_OUTPUT"
+            echo "image_tag=${ref#v}" >> "$GITHUB_OUTPUT"
+            echo "stable release: ${ref} -> image tag ${ref#v}"
+          else
+            # Pre-release tags still get tested + smoked below; publish is
+            # skipped via the stable output.
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+            echo "'${ref}' is not a stable vX.Y.Z tag; tests and smoke will run, nothing will be published."
+          fi
+
+  test:
+    name: Python + JS checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # Native-install prerequisites so the repo's loopback ping/traceroute
+      # integration tests run instead of skipping.
+      - name: Install probe binaries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends iputils-ping traceroute
+
+      - name: Install uv (pinned as in the Dockerfile)
+        run: python -m pip install "uv==0.12.0"
+
+      - name: Install project + dev dependencies from uv.lock
+        run: uv sync --frozen --extra dev
+
+      - name: Python tests
+        run: uv run --no-sync python -m pytest
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Dashboard JS tests
+        run: node tests/test_app.js
+
+  build-and-smoke:
+    name: Build + runtime smoke (${{ matrix.platform }})
+    needs: [guard, test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+          - platform: linux/arm64
+            arch: arm64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Only the arm64 leg needs emulation: linux/amd64 runs natively on
+      # the x86_64 runner. The published image's exact aarch64 layers are
+      # executed for real — uvicorn serves HTTP and the ping subprocess
+      # answers on loopback — so the smoke below is genuine per-architecture
+      # runtime validation, not just a build check.
+      - name: Set up QEMU (arm64 emulation)
+        if: matrix.arch == 'arm64'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Build ONE platform per matrix leg and load it into the local
+      # docker daemon. Nothing is pushed here: the smoke test runs against
+      # this locally built image, so validation never depends on the
+      # release image already being published. Cache scopes are per
+      # architecture so the two concurrent legs never write the same GHA
+      # cache entry; the unscoped cache-from also lets a leg warm up from
+      # ci.yml's default-scope cache written on main. The cache only
+      # influences layer reuse — the artifact identity chain below is
+      # anchored on the digest of the image that actually got built and
+      # smoked, so cache reuse can never fake byte identity.
+      - name: Build image for ${{ matrix.platform }} (local load, no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: netplot:release-smoke-${{ matrix.arch }}
+          # Plain single-platform image for the local smoke run below (and
+          # for the exact save/load/publish handoff after it).
+          provenance: false
+          build-args: |
+            NETPLOT_SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
+          cache-from: |
+            type=gha,scope=release-${{ matrix.arch }}
+            type=gha
+          cache-to: type=gha,scope=release-${{ matrix.arch }},mode=max
+
+      # Real runtime gate per architecture: health, static assets, loopback
+      # ping through the API, persistence across container recreation,
+      # non-root runtime. Generous timeout: arm64 runs emulated.
+      - name: Runtime smoke test (${{ matrix.platform }})
+        run: SMOKE_TIMEOUT=180 bash .github/scripts/smoke_container.sh netplot:release-smoke-${{ matrix.arch }}
+
+      # Export the EXACT image that just passed the smoke test. The local
+      # image config digest (.Id) and the tarball's sha256 are recorded
+      # next to the tarball; publish re-checks both after the artifact
+      # round-trip, proving it publishes the very bytes that were smoked.
+      # docker save/load preserve the image config digest, so this is the
+      # identity that carries through to the pushed staging manifest.
+      - name: Export smoke-tested image as artifact
+        run: |
+          set -euo pipefail
+          arch="${{ matrix.arch }}"
+          image="netplot:release-smoke-${arch}"
+          docker image inspect --format '{{.Id}}' "$image" | tee "netplot-${arch}.image-id"
+          docker save "$image" -o "netplot-${arch}.tar"
+          sha256sum "netplot-${arch}.tar" > "netplot-${arch}.tar.sha256"
+          ls -lh "netplot-${arch}".*
+
+      - name: Upload smoke-tested image artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: netplot-image-${{ matrix.arch }}
+          path: |
+            netplot-${{ matrix.arch }}.tar
+            netplot-${{ matrix.arch }}.tar.sha256
+            netplot-${{ matrix.arch }}.image-id
+          if-no-files-found: error
+          # The artifacts are only consumed by this run's publish job,
+          # moments later; keep private-repo artifact storage lean.
+          retention-days: 7
+
+  publish:
+    name: Publish multi-arch image to GHCR
+    needs: [guard, test, build-and-smoke]
+    # Only stable vX.Y.Z tags publish (and never a PR: tag-push trigger
+    # only). Both smoke legs must have passed (and uploaded their
+    # artifacts) for `needs` to be satisfied — publish cannot start on a
+    # partial or failed matrix.
+    if: needs.guard.outputs.stable == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # No source checkout and no QEMU: nothing is built or executed from
+      # this job. docker load/push are architecture-agnostic, so the arm64
+      # image is shipped without emulation. Buildx is only needed for the
+      # imagetools create/inspect calls below.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # GITHUB_TOKEN only — no PAT secrets are introduced anywhere. The
+      # short-lived job token is enough to push to the repository's GHCR
+      # namespace.
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download smoke-tested image artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: netplot-image-*
+          path: images
+          merge-multiple: true
+
+      # Identity chain, checked end to end:
+      #   1. sha256sum -c: the tarball survived the artifact round-trip.
+      #   2. docker load + .Id comparison: the loaded image IS the image
+      #      that passed the build leg's smoke test (docker save/load
+      #      preserve the config digest recorded before upload).
+      #   3. source-label check: the exact image config carries
+      #      org.opencontainers.image.source for this repository, which
+      #      makes GHCR associate the package with the repository so the
+      #      private package inherits repository access on first push.
+      - name: Load smoke-tested images and verify identity
+        run: |
+          set -euo pipefail
+          cd images
+          for arch in amd64 arm64; do
+            echo "verify: netplot-${arch}.tar checksum"
+            sha256sum -c "netplot-${arch}.tar.sha256"
+            echo "verify: loading netplot-${arch}.tar"
+            docker load -i "netplot-${arch}.tar"
+            expected="$(cat "netplot-${arch}.image-id")"
+            actual="$(docker image inspect --format '{{.Id}}' "netplot:release-smoke-${arch}")"
+            if [ "$expected" != "$actual" ]; then
+              echo "::error::${arch} image identity mismatch: smoked ${expected}, loaded ${actual}"
+              exit 1
+            fi
+            echo "  ${arch}: ${actual} == the image that passed the runtime smoke"
+            source_url="${{ github.server_url }}/${{ github.repository }}"
+            label="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.source"}}' "netplot:release-smoke-${arch}")"
+            if [ "$label" != "$source_url" ]; then
+              echo "::error::${arch} org.opencontainers.image.source label is '${label}', expected '${source_url}'"
+              exit 1
+            fi
+            echo "  ${arch}: source label -> ${label}"
+          done
+
+      # Push the reloaded (== smoke-tested) images to per-architecture
+      # staging tags. Plain `docker push` ships the loaded bytes verbatim —
+      # no build, no attestation injection. The registry digests captured
+      # here are immutable and are the ONLY inputs used to assemble the
+      # consumer tags below.
+      - name: Push per-architecture staging tags
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${{ github.repository }}"
+          for arch in amd64 arm64; do
+            stage="${image}:staging-${{ needs.guard.outputs.image_tag }}-${arch}"
+            docker tag "netplot:release-smoke-${arch}" "$stage"
+            echo "push: ${stage}"
+            docker push "$stage"
+            digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$stage")"
+            echo "  ${stage} -> ${digest}"
+            case "$arch" in
+              amd64) echo "AMD64_DIGEST=${digest}" >> "$GITHUB_ENV" ;;
+              arm64) echo "ARM64_DIGEST=${digest}" >> "$GITHUB_ENV" ;;
+            esac
+          done
+
+      # Assemble both consumer tags from exactly the two immutable staging
+      # digests, then verify each tag below. Registry tag writes are not
+      # transactional: a partial failure must fail the release rather than
+      # claim both tags moved successfully.
+      - name: Assemble X.Y.Z + latest from the exact digests
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${{ github.repository }}"
+          echo "assemble: ${image}:${{ needs.guard.outputs.image_tag }} + :latest"
+          echo "  amd64 -> ${AMD64_DIGEST}"
+          echo "  arm64 -> ${ARM64_DIGEST}"
+          docker buildx imagetools create \
+            -t "${image}:${{ needs.guard.outputs.image_tag }}" \
+            -t "${image}:latest" \
+            "${image}@${AMD64_DIGEST}" \
+            "${image}@${ARM64_DIGEST}"
+
+      # Final gate: the published manifests must list BOTH platforms and
+      # reference exactly the two staging digests pushed above — proving
+      # the published bytes are the smoke-tested bytes.
+      - name: Verify published manifests reference the smoke-tested digests
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${{ github.repository }}"
+          for tag in "${{ needs.guard.outputs.image_tag }}" latest; do
+            ref="${image}:${tag}"
+            echo "verify: inspecting ${ref}"
+            docker buildx imagetools inspect "$ref"
+            manifests="$(docker buildx imagetools inspect --format '{{json .Manifest.Manifests}}' "$ref")"
+            echo "$manifests" | jq -e \
+              --arg amd64 "${AMD64_DIGEST}" \
+              --arg arm64 "${ARM64_DIGEST}" \
+              'map(select(.platform.os == "linux" and .platform.architecture == "amd64"))[0].digest == $amd64
+               and
+               map(select(.platform.os == "linux" and .platform.architecture == "arm64"))[0].digest == $arm64' >/dev/null \
+              || { echo "::error::${ref} does not reference exactly the smoke-tested amd64+arm64 manifests"; exit 1; }
+            echo "  ${ref} -> linux/amd64 ${AMD64_DIGEST}"
+            echo "  ${ref} -> linux/arm64 ${ARM64_DIGEST}"
+          done
+          echo "verify: published bytes are the smoke-tested bytes (no rebuild between smoke and publish)"
+
+  # Post-publish gate: prove a brand-new user can really install THIS
+  # release through the documented one-file pull path while the repo and
+  # the package stay private — using only the short-lived job token.
+  # This job never clones, builds, or runs source: it consumes the release
+  # exactly as the README's Quick Start describes (tagged compose file +
+  # image pull). Read-only permissions: contents:read fetches the tagged
+  # compose file via gh api; packages:read logs into GHCR for the pull.
+  # It needs publish to have succeeded, so it only runs for stable tags.
+  consumer-gate:
+    name: New-user install gate (private pull path)
+    needs: [guard, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      # Same short-lived job token for gh (compose-file download) and for
+      # docker login below; no PAT, no account-wide secrets anywhere.
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Fresh-user install of THIS release: a brand-new directory holding
+      # only what a new user obtains per the README — the tagged
+      # docker-compose.yml (job-token gh api, no checkout) and a .env
+      # pinning the released X.Y.Z. The unique Compose project + trap'ed
+      # `down -v` guarantee cleanup removes ONLY this invocation's
+      # containers, network, and project-prefixed netplot-data volume —
+      # no globally named resources, no prune, nothing pre-existing.
+      - name: Install and run via the documented compose pull path
+        run: |
+          set -euo pipefail
+
+          tag="${{ needs.guard.outputs.image_tag }}"
+          image="ghcr.io/${GITHUB_REPOSITORY}"
+          gate_dir="$(mktemp -d "${RUNNER_TEMP}/netplot-install-gate.XXXXXX")"
+          project="netplot-install-gate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$$"
+
+          cleanup() {
+            docker compose --project-name "$project" \
+              -f "${gate_dir}/docker-compose.yml" \
+              down --volumes --remove-orphans >/dev/null 2>&1 || true
+            rm -rf "$gate_dir"
+          }
+          trap cleanup EXIT
+
+          cd "$gate_dir"
+
+          # 1. The one file a new user needs, from THIS private tag, via
+          #    the job token (GH_TOKEN authenticates gh).
+          gh api -H "Accept: application/vnd.github.raw" \
+            "repos/${GITHUB_REPOSITORY}/contents/docker-compose.yml?ref=${GITHUB_REF_NAME}" \
+            > docker-compose.yml
+          grep -q "ghcr.io/${GITHUB_REPOSITORY}" docker-compose.yml \
+            || { echo "::error::tagged docker-compose.yml does not reference ${image}"; exit 1; }
+
+          # 2. New-user config: exact released tag, loopback-only bind,
+          #    ephemeral host port.
+          # Let Docker allocate the host port atomically; do not reserve then free one.
+          cat > .env <<EOF
+          NETPLOT_VERSION=${tag}
+          NETPLOT_BIND_ADDRESS=127.0.0.1
+          NETPLOT_PORT=0
+          EOF
+
+          compose=(docker compose --project-name "$project" --project-directory "$gate_dir" -f "${gate_dir}/docker-compose.yml")
+
+          # 3. Authenticated pull of exactly what was just published: the
+          #    pulled image's RepoDigest must be the tag's manifest-list
+          #    digest (what a logged-in new user gets).
+          published_digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${image}:${tag}")"
+          arches="$(docker buildx imagetools inspect --format '{{json .Manifest.Manifests}}' "${image}:${tag}" \
+            | jq -r '[.[] | "\(.platform.os)/\(.platform.architecture)"] | sort | join(", ")')"
+          timeout 600 "${compose[@]}" pull
+          docker image inspect --format '{{json .RepoDigests}}' "${image}:${tag}" \
+            | jq -e --arg want "${image}@${published_digest}" 'index($want) != null' >/dev/null \
+            || { echo "::error::compose pull did not fetch the published manifest digest ${published_digest}"; exit 1; }
+
+          # 4. Bring it up like a new user: bounded by compose's own
+          #    --wait-timeout, with an outer hard backstop.
+          timeout 300 "${compose[@]}" up -d --wait --wait-timeout 240
+
+          # 5. The published host binding must be loopback-only.
+          publish="$("${compose[@]}" port netplot 8000)"
+          case "$publish" in
+            127.0.0.1:*) port="${publish##*:}" ;;
+            *) echo "::error::published host binding is '${publish}', expected loopback only"; exit 1 ;;
+          esac
+          [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -gt 0 ] \
+            || { echo "::error::Docker did not allocate a valid ephemeral host port: '${publish}'"; exit 1; }
+
+          # 6. Real health JSON over the published loopback port.
+          base="http://127.0.0.1:${port}"
+          health=""
+          deadline=$(( $(date +%s) + 120 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            if health="$(curl -fsS --connect-timeout 5 --max-time 10 "${base}/healthz" 2>/dev/null)"; then break; fi
+            sleep 2
+          done
+          [ -n "$health" ] || { echo "::error::GET /healthz did not answer within 120s of compose --wait"; exit 1; }
+          jq -e '.status == "ok" and (.persistence // "") != "degraded"' >/dev/null <<<"$health" \
+            || { echo "::error::unexpected /healthz body: ${health}"; exit 1; }
+
+          echo "consumer gate: fresh-user install of ${image}:${tag} (${published_digest}; ${arches}) healthy at ${publish}"
+          {
+            echo "GATE_DIGEST=${published_digest}"
+            echo "GATE_ARCHES=${arches}"
+            echo "GATE_RESULT=pass (compose pull+up --wait, /healthz ok, binding ${publish})"
+          } >> "$GITHUB_ENV"
+
+      # The package must still be PRIVATE. Two independent signals, both
+      # restricted to this repository's own image/package paths — never
+      # an organization or account-wide listing:
+      #   a) Authoritative GitHub package metadata, best-effort: a 403/404
+      #      from the packages API is not an error (the job token may not
+      #      read it); the registry probe below stays authoritative.
+      #   b) An explicit anonymous-registry denial probe: with NO
+      #      credentials anywhere in the flow, the anonymous token +
+      #      manifest fetch must be DENIED. HTTP 200 means the package
+      #      leaked public; network-level failures are indeterminate and
+      #      FAIL the gate (never treated as proof of privacy). The
+      #      authenticated `docker compose pull` that just succeeded in
+      #      the step above is the pairing that rules out "registry is
+      #      just down". Visibility is only read — never flipped.
+      - name: Verify the package is not anonymously pullable
+        run: |
+          set -euo pipefail
+
+          tag="${{ needs.guard.outputs.image_tag }}"
+          image_path="${GITHUB_REPOSITORY}"        # ghcr.io/<owner>/<image> for this repo
+          package_name="${GITHUB_REPOSITORY##*/}"  # container package name in the Packages API
+
+          # (a) Authoritative metadata for exactly this package.
+          if vis="$(gh api "users/${GITHUB_REPOSITORY_OWNER}/packages/container/${package_name}" --jq '.visibility' 2>/dev/null)" && [ -n "$vis" ]; then
+            if [ "$vis" = "public" ]; then
+              echo "::error::GitHub package metadata reports visibility=public for ${package_name}"
+              exit 1
+            fi
+            privacy_note="GitHub metadata: visibility=${vis}"
+            echo "privacy: package metadata says visibility=${vis}"
+          else
+            privacy_note="GitHub metadata: not readable by job token (registry probe authoritative)"
+            echo "privacy: packages metadata API not readable by this job token; relying on the anonymous registry probe"
+          fi
+
+          # (b) Anonymous registry denial probe (curl only — no docker
+          #     credentials, no job token, nothing persisted).
+          accept="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+          token_file="${RUNNER_TEMP}/anon-ghcr-token.json"
+          for ref in "$tag" latest; do
+            token_code="$(curl -sS -o "$token_file" -w '%{http_code}' --connect-timeout 10 --max-time 30 \
+              "https://ghcr.io/token?service=ghcr.io&scope=repository:${image_path}:pull")" \
+              || { echo "::error::anonymous token request failed at network level — cannot verify privacy of ${image_path}:${ref}; refusing to pass"; exit 1; }
+            case "$token_code" in
+              200)
+                token="$(jq -r '.token // empty' "$token_file")"
+                [ -n "$token" ] || { echo "::error::anonymous token response malformed for ${image_path}:${ref}; refusing to pass"; exit 1; }
+                code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 \
+                  -H "Authorization: Bearer ${token}" -H "Accept: ${accept}" \
+                  "https://ghcr.io/v2/${image_path}/manifests/${ref}")" \
+                  || { echo "::error::anonymous manifest request failed at network level — cannot verify privacy of ${image_path}:${ref}; refusing to pass"; exit 1; }
+                case "$code" in
+                  200) echo "::error::${image_path}:${ref} answered HTTP 200 to a credential-free manifest fetch — the package is PUBLICLY PULLABLE"; exit 1 ;;
+                  401|403|404) echo "privacy: anonymous pull of ${image_path}:${ref} denied (manifest HTTP ${code})" ;;
+                  *) echo "::error::anonymous probe of ${image_path}:${ref} inconclusive (manifest HTTP ${code}) — not proof of privacy; refusing to pass"; exit 1 ;;
+                esac
+                ;;
+              401|403|404)
+                # Denied already at token issuance: no anonymous pull is
+                # possible (the authenticated pull above proves the path
+                # itself is valid, so this is a real denial, not a typo).
+                echo "privacy: anonymous pull of ${image_path}:${ref} denied (token issuance HTTP ${token_code})"
+                ;;
+              *)
+                echo "::error::anonymous token request for ${image_path}:${ref} inconclusive (HTTP ${token_code}) — not proof of privacy; refusing to pass"
+                exit 1
+                ;;
+            esac
+          done
+          rm -f "$token_file"
+          privacy_note="${privacy_note}; anonymous pull of :${tag} and :latest denied; authenticated compose pull succeeded"
+          echo "PRIVACY_NOTE=${privacy_note}" >> "$GITHUB_ENV"
+
+      - name: Record release summary
+        run: |
+          tag="${{ needs.guard.outputs.image_tag }}"
+          {
+            echo "## Released ghcr.io/${GITHUB_REPOSITORY}:${tag} (+ :latest)"
+            echo ""
+            echo "- Manifest digest: ${GATE_DIGEST}"
+            echo "- Architectures: ${GATE_ARCHES}"
+            echo "- New-user install gate: ${GATE_RESULT}"
+            echo "- Privacy: ${PRIVACY_NOTE}"
+          } >> "$GITHUB_STEP_SUMMARY"

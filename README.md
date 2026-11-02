@@ -4,22 +4,221 @@ Netplot is a PingPlotter-style network latency and packet-loss dashboard with
 continuous per-hop probing, live timelines, persistent background collections,
 CSV export, and Prometheus metrics.
 
-## Source
+> **Private software.** The source repository (`github.com/jschert/netplot`)
+> and the container image (`ghcr.io/jschert/netplot`) are **private**. You
+> need a GitHub account that has been granted access to the repository
+> (e.g. as a collaborator) before you can download the Compose file or pull
+> the image. The instructions below use authenticated commands throughout.
+> If the owner makes both the repository and image public, use the public
+> download alternative below and omit authentication.
 
-Clone the source repository:
+## Quick Start (Docker)
+
+Requirements: Docker (Engine 24+ with the Compose v2 plugin, or Docker
+Desktop). Private downloads also require the [GitHub CLI](https://cli.github.com/)
+(`gh`) and account access. No Git checkout, Python, or build toolchain is needed.
+
+### 1. One-time: authenticate to GitHub and GHCR
 
 ```bash
-git clone https://github.com/jschert/netplot.git
-cd netplot
+GH_BROWSER=true BROWSER=true gh auth login --hostname github.com --git-protocol https --web --scopes read:packages
 ```
+
+The command prints a one-time device code and URL. Open that URL yourself
+and enter the displayed code; the `true` browser command prevents automatic
+browser launches. This device code is not a personal access token.
+
+This requests the usual source-repository access plus `read:packages` for
+private GHCR pulls. If you were already logged in without that scope, add it
+once with `GH_BROWSER=true BROWSER=true gh auth refresh --hostname github.com --scopes read:packages`.
+Then pass the token to Docker through stdin, not as a command-line argument:
+
+```bash
+gh auth token --hostname github.com | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+```
+
+Docker stores the credential in its configured credential helper, or as
+recoverable base64 in `~/.docker/config.json` when no helper is configured.
+The CLI token may also grant repository access or other permissions beyond
+image pulls. Prefer a dedicated `read:packages`-only token below when you
+want a least-privilege Docker credential.
+
+Replace `YOUR_GITHUB_USERNAME` with your own GitHub login. Alternatively,
+enter a classic personal access token with `read:packages` at a hidden
+Bash prompt, without putting its value in shell history:
+
+```bash
+read -r -s -p "GHCR token: " GHCR_TOKEN
+printf '\n'
+printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+unset GHCR_TOKEN
+```
+
+Never commit real tokens, and never pipe a remote script into a shell —
+the commands here only use your own local `gh`/`docker` binaries.
+
+### 2. Download the Compose file (version-pinned)
+
+```bash
+mkdir netplot && cd netplot
+gh api 'repos/jschert/netplot/contents/docker-compose.yml?ref=v0.1.0' \
+  -H 'Accept: application/vnd.github.raw' > docker-compose.yml
+printf 'NETPLOT_VERSION=0.1.0\n' > .env
+```
+
+The Compose file and image are both pinned to the `v0.1.0` release; `.env`
+keeps the selected image version across later commands. Substitute another
+published stable `vX.Y.Z` tag and matching `X.Y.Z` image version if desired.
+If the repository is made public, the unauthenticated download command is
+`curl -fsSL https://raw.githubusercontent.com/jschert/netplot/v0.1.0/docker-compose.yml -o docker-compose.yml`
+— until then that URL also requires authentication.
+
+### 3. Start
+
+```bash
+docker compose up -d
+```
+
+Open **http://127.0.0.1:8000**, enter a target (DNS name or IP), pick an
+interval, and press the green **Play** button. The first start pulls
+`ghcr.io/jschert/netplot:0.1.0` for your host (`linux/amd64` or
+`linux/arm64`). A `denied`/`not found` error means either your account
+lacks access or the selected tag is unavailable.
+
+### Configuration
+
+All knobs are environment variables read by `docker-compose.yml`. Put them
+in a `.env` file next to it to make them stick:
+
+| Variable               | Default     | Purpose                                                |
+| ---------------------- | ----------- | ------------------------------------------------------ |
+| `NETPLOT_VERSION`      | `latest`    | Image tag to pull, e.g. `0.1.0`                        |
+| `NETPLOT_BIND_ADDRESS` | `127.0.0.1` | Host interface the published port binds to             |
+| `NETPLOT_PORT`         | `8000`      | Host port                                              |
+
+```dotenv
+# .env
+NETPLOT_VERSION=0.1.0
+NETPLOT_BIND_ADDRESS=127.0.0.1
+NETPLOT_PORT=8000
+```
+
+- The default bind is **loopback only**, deliberately: netplot has **no
+  authentication** — anyone who can reach the port can see and control
+  every trace and download its full history (CSV). See *LAN access* below
+  before changing it.
+- The `netplot-data` named volume persists `settings.json` (internal CIDR
+  ranges, optional InfluxDB source — edited via the dashboard's ⚙ Settings
+  dialog) and background session definitions across upgrades and container
+  recreation. Sample history is **not** persisted.
+- `restart: unless-stopped` keeps the dashboard running across reboots and
+  Docker daemon restarts.
+
+### Updating
+
+To upgrade, change `NETPLOT_VERSION` in `.env` to the published release you
+want, then run:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Keep the selected version in `.env`, rather than a one-command environment
+override that disappears on the next invocation. To follow stable releases
+automatically on each explicit pull, set `NETPLOT_VERSION=latest`.
+
+Keep the same project directory/name when updating: Compose's volume name
+is project-scoped (`<project>_netplot-data`), so changing projects selects a
+different data volume. Image updates do not replace the existing volume.
+
+### Optional: LAN access (explicit)
+
+netplot has no authentication or access control. Only expose it on
+networks you fully trust (e.g. an isolated lab VLAN), and never to the
+public internet:
+
+```bash
+NETPLOT_BIND_ADDRESS=0.0.0.0 docker compose up -d        # all interfaces
+NETPLOT_BIND_ADDRESS=192.168.1.10 docker compose up -d   # one interface only
+```
+
+For a persistent LAN binding, set `NETPLOT_BIND_ADDRESS` in `.env`. The
+one-command overrides above do not persist; a later bare `docker compose
+up -d` uses the saved `.env` value or the loopback default.
+
+### Stop and uninstall
+
+```bash
+docker compose stop     # stop; container kept
+docker compose down     # stop; remove container and network (data kept)
+```
+
+Both preserve the `netplot-data` volume (settings and background session
+definitions). Removing the volume is **destructive** — it permanently
+deletes those settings (sample history is never persisted anyway):
+
+```bash
+docker compose down -v  # DESTRUCTIVE: also deletes the netplot-data volume
+```
+
+### Running without Compose
+
+The same image runs with plain Docker. This example uses a distinct volume
+named `netplot-data`; it does not automatically reuse Compose's project-scoped
+volume. Specify the existing volume name if switching an installed instance:
+
+```bash
+docker run -d --name netplot \
+  -p 127.0.0.1:8000:8000 \
+  -v netplot-data:/data \
+  --restart unless-stopped \
+  ghcr.io/jschert/netplot:0.1.0
+```
+
+## Route-origin caveat (containers)
+
+Inside the container, `ping`/`traceroute` run in the container's network
+namespace. Linux's default bridge network can add a Docker bridge/gateway hop;
+it is not the host network. Docker Desktop for macOS/Windows adds a Linux
+VM as well, so routes can differ further from native host probes. Use native
+installation when you need the route as seen by the host itself.
+
+## Native installation (no Docker)
+
+Native probing is supported on Linux and macOS. Requirements: Python ≥ 3.11,
+Git, the GitHub CLI for private source access, and `ping` + `traceroute` on
+`PATH`. No `[dev]` extras are needed. Install from an authenticated clone:
+
+```bash
+gh repo clone jschert/netplot
+cd netplot
+python -m venv .venv && source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install .
+netplot                # or: python -m netplot
+```
+
+The server listens on http://127.0.0.1:8000 by default (`--host` /
+`--port` to change; see *Development* for `--reload` behavior). Set
+`NETPLOT_DATA_DIR` to a writable directory outside the checkout (default
+`<cwd>/data`) to keep `settings.json` and background session definitions
+out of the source tree. Native installs probe from the host itself — no
+VM indirection, so the Docker Desktop caveat above does not apply.
+
+(If the repository is ever made public, `git clone
+https://github.com/jschert/netplot.git` works without authentication.)
 
 ## Development
 
-Create an environment and install the project with its test dependencies:
+Everything below is for working on the source; end users never need it.
+
+### Source checkout and checks
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+gh repo clone jschert/netplot
+cd netplot
+python -m venv .venv && source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e '.[dev]'
 ```
@@ -31,21 +230,11 @@ python -m pytest
 node tests/test_app.js
 ```
 
-Run the dashboard server:
+### Run from source
 
 ```bash
 python -m netplot
-```
-
-or use the installed console script:
-
-```bash
-netplot
-```
-
-You can override bind options:
-
-```bash
+# or override bind options:
 python -m netplot --host 0.0.0.0 --port 8080
 ```
 
@@ -53,7 +242,22 @@ The CLI starts Uvicorn with the `netplot.web:app` import path, allowing
 `--reload` to restart the application while preserving the selected `--host`
 and `--port`.
 
-Available endpoints:
+### Docker: source-build override
+
+The default `docker-compose.yml` has **no `build:` stanza** — it uses the
+published image. To build your working tree instead, merge the explicit
+override:
+
+```bash
+docker compose -f docker-compose.yml -f compose.build.yml up -d --build
+```
+
+`compose.build.yml` replaces the `ghcr.io/jschert/netplot` image with
+`build: .` tagged `netplot:dev`; the loopback port mapping, restart
+policy, and `netplot-data` volume still come from the base file. A bare
+`docker compose up -d` never builds source; use `docker compose pull` to update.
+
+### Endpoints
 
 - `GET /` serves the dashboard UI: a PingPlotter-style toolbar (Play/Pause split, target combobox with recent-targets history, interval preset dropdown, Focus window dropdown, disabled ICMP packet-type dropdown, focus caption line), a live hop table (status / Hop / Count / IP / DNS / Avg / Min / Cur / PL% / Graph), and per-hop latency timeline graphs driven by SSE. The Graph column shows shared 100/200 ms zones, min–max whiskers, average/current markers, packet-loss hatching, and an average connector. The target timeline is always shown; double-click any hop row to add or remove a timeline for that hop. Drag a region on any timeline to focus the table stats on that period (the Focus dropdown is the rolling-window size; manual drag-focus overrides it until cleared). Pausing a trace freezes the view (timelines, stats, focus caption) at the server-recorded pause time; resuming continues from current wall time.
 - `GET /static/app.js`, `GET /static/style.css` serve the dashboard assets.
@@ -116,11 +320,12 @@ ignored-with-warning if corrupt — boot never crashes. See
 ### Configuration and private data
 
 Keep deployment-specific configuration and runtime data outside the source
-checkout. Set `NETPLOT_DATA_DIR` to an external writable directory, or mount a
-volume at `/data` in the container (see below). The directory holds
-`settings.json` (internal CIDRs and optional InfluxDB connection settings) and
-`sessions.json` (background collection definitions, including targets and names),
-plus any recovery/quarantine files.
+checkout. Set `NETPLOT_DATA_DIR` to an external writable directory, or let
+Compose/mount put the `netplot-data` named volume at `/data` in the
+container (see *Quick Start*). The directory holds `settings.json`
+(internal CIDRs and optional InfluxDB connection settings) and
+`sessions.json` (background collection definitions, including targets and
+names), plus any recovery/quarantine files.
 
 Configure network ranges and the optional throughput source through the dashboard's
 Settings dialog; connection fields start blank, with no deployment-specific presets.
@@ -130,47 +335,47 @@ artifacts are excluded from Git and the Docker build context; example environmen
 templates may be tracked, but must contain only generic values. DNS masking is
 display-only, not a sanitization step for API responses, CSV exports, or captures.
 
-## Container
+## Image internals
 
-Build and run the dashboard in Docker with no privileges required:
+The published image (`ghcr.io/jschert/netplot`, tags `X.Y.Z` and `latest`)
+is a multi-stage build on `python:3.12-slim`: the build stage installs a
+pinned `uv`, exports the frozen runtime dependency set from `uv.lock`, and
+builds the `netplot` wheel; the runtime stage installs `iputils-ping`,
+`traceroute`, and `ca-certificates` alongside the wheel and runs the
+`netplot` console script as a non-root user (uid 1000). `ping` works
+unprivileged under Docker's default `ping_group_range`; `traceroute` uses
+UDP probes, so neither binary needs `cap_net_raw` or `--privileged`.
+Port 8000 is exposed; a stdlib-based `HEALTHCHECK` polls `GET /healthz`.
+`ENV NETPLOT_DATA_DIR=/data` plus a `VOLUME /data` make background
+session definitions writable by the non-root process. See `docs/spec.md`
+for the packaging contract.
 
-```bash
-docker build -t netplot:dev .
-docker run --rm -p 8000:8000 netplot:dev
-# dashboard → http://127.0.0.1:8000
-```
+## Maintainer notes (releases)
 
-Or with the convenience compose file:
-
-```bash
-docker compose up -d --build
-```
-
-The image (`python:3.12-slim`-based, multi-stage) installs `iputils-ping`
-and `traceroute` alongside the `netplot` wheel and runs the console script
-as a non-root user (uid 1000). `ping` works unprivileged under Docker's
-default `ping_group_range`; `traceroute` uses UDP probes, so neither binary
-needs `cap_net_raw` or `--privileged`. Port 8000 is exposed; a stdlib-based
-`HEALTHCHECK` polls `GET /healthz`. See `docs/spec.md` for the packaging
-contract.
-
-Note: on Docker Desktop for Mac the container runs inside the Linux VM, so
-`traceroute`/`ping` originate there — LAN hops (and your local router) will
-differ from running the same trace directly on the host.
-
-To keep persistent (background) sessions across container restarts, mount
-a volume at the data dir and set `NETPLOT_DATA_DIR`:
-
-```bash
-docker run --rm -p 8000:8000 \
-  -e NETPLOT_DATA_DIR=/data \
-  -v netplot-data:/data \
-  netplot:dev
-```
+- After main-branch CI passes, push a stable `vX.Y.Z` tag matching the
+  package version. The initial release is `v0.1.0`; do not replace a
+  published release tag.
+- Release CI builds and runs real container smoke checks for `linux/amd64`
+  and `linux/arm64`. It transfers the exact smoke-tested images as
+  checksummed artifacts and verifies their identities before publication:
+  there is no rebuild after the runtime gate.
+- The publisher pushes internal `staging-X.Y.Z-<arch>` tags, then assembles
+  `X.Y.Z` and `latest` multi-architecture manifests from immutable image
+  digests. Stable release runs are serialized; consumer tags move only after
+  all test and smoke jobs pass.
+- A final new-user gate downloads only the tagged Compose file, pulls the
+  private release with the job's short-lived `GITHUB_TOKEN`, starts it on
+  loopback, and verifies health and image identity. Anonymous pulls must
+  remain denied. The Release run summary records the digest and results.
+- The repository and the GHCR package stay **private**; nothing automates
+  a visibility change. Users install via the authenticated path in
+  *Quick Start* (`read:packages` login + `gh api` Compose download).
 
 ## Layout
 
 - `src/netplot/` — application package
 - `tests/` — automated tests
 - `docs/` — project documentation
-- `Dockerfile`, `docker-compose.yml`, `.dockerignore` — container packaging
+- `Dockerfile`, `.dockerignore` — container image build
+- `docker-compose.yml` — end-user runner; pulls `ghcr.io/jschert/netplot`
+- `compose.build.yml` — developer override; builds from source (`netplot:dev`)

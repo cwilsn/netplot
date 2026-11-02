@@ -237,3 +237,23 @@ axis, zone fills, whiskers, and red avg connector are unchanged).
 
 PURE additions, all node-asserted: `legendMax`, `legendMarkerPercent`,
 `legendMarkerLanes`, plus the exported `LEGEND_FLOOR_MS` (300) constant.
+
+## Compose split: published-image default + source-build override
+
+End-user installation no longer builds anything. `docker-compose.yml`
+has no `build:` stanza — it pulls
+`ghcr.io/jschert/netplot:${NETPLOT_VERSION:-latest}` (private image;
+requires a `read:packages` `docker login ghcr.io`), maps
+`${NETPLOT_BIND_ADDRESS:-127.0.0.1}:${NETPLOT_PORT:-8000}:8000`
+(loopback default — the app is unauthenticated), and keeps
+`restart: unless-stopped` plus the `netplot-data` named volume at
+`/data` (persists `settings.json` + background session definitions
+only, never sample history). Developer source builds live in the
+explicit `compose.build.yml` override, merged as
+`docker compose -f docker-compose.yml -f compose.build.yml up -d
+--build` (adds `build: .`, retags `netplot:dev` instead of the ghcr.io
+image — Compose scalar-merge replaces `image:`). The README Quick
+Start documents the authenticated private install path (gh CLI
+Compose download pinned to a `vX.Y.Z` ref + GHCR login) and explains
+the public/unauthenticated variant only conditionally — no doc claims
+the repository or image is public.

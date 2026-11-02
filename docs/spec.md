@@ -1098,12 +1098,29 @@ at the repo root).
 - **Health**: `HEALTHCHECK` polls `GET /healthz` via the stdlib
   (`urllib.request`) — no `curl` install, keeping the image lean.
 - **OCI labels**: `org.opencontainers.image.title`, `.description`,
-   `.license(s)`.
-- **Build context** (`.dockerignore`): only `pyproject.toml`, `uv.lock`,
-  `README.md`, and `src/` enter the context; tests, docs, screenshots,
-  caches, and the local venv are excluded.
-- **Convenience runner**: `docker-compose.yml` builds the image and maps
-  `8000:8000` with `restart: unless-stopped`.
+  `.license(s)`, and `.source` (the canonical GitHub repository URL, used
+  for GHCR repository association).
+- **Build inputs**: `pyproject.toml`, `uv.lock`, `README.md`, and `src/`
+  are copied into the build stage. `.dockerignore` excludes tests, docs,
+  screenshots, caches, and the local venv from the build context.
+- **Published images**: ``ghcr.io/jschert/netplot`` is **private** and
+  multi-arch (``linux/amd64`` + ``linux/arm64``). Each stable ``vX.Y.Z``
+  tag publishes image tag ``X.Y.Z``; ``latest`` is moved only after
+  checks and runtime smoke of both architectures succeed. The publisher
+  verifies and loads the exact checksummed image artifacts that passed
+  smoke, without rebuilding, then assembles consumer manifests by digest.
+  Pulls require ``docker login ghcr.io`` (``read:packages``) — see the
+  README Quick Start for the authenticated install path.
+- **Convenience runner**: ``docker-compose.yml`` has no ``build:``
+  stanza — it pulls ``ghcr.io/jschert/netplot:${NETPLOT_VERSION:-latest}``
+  and maps
+  ``${NETPLOT_BIND_ADDRESS:-127.0.0.1}:${NETPLOT_PORT:-8000}:8000``
+  (loopback by default: the app has no authentication) with ``restart:
+  unless-stopped`` and the ``netplot-data`` named volume at ``/data``.
+  Developer source builds use the explicit override
+  ``docker compose -f docker-compose.yml -f compose.build.yml up -d
+  --build`` (``build: .`` tagged ``netplot:dev``, replacing the ghcr.io
+  image reference; ports/restart/volume inherited from the base file).
 
 ## Slice plan
 

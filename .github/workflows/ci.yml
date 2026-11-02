@@ -1,0 +1,91 @@
+# Continuous integration: Python + JS checks and a real container runtime
+# smoke test against a locally built image (amd64 — the runner's native
+# architecture; both release architectures are built, smoked, and gated in
+# release.yml before anything is published).
+#
+# Nothing in this workflow pushes images or requires registry credentials.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: everything here only needs to read the repository.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python + JS checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # Native-install prerequisites (the product shells out to ping and
+      # traceroute). The repo's own integration tests skip when these are
+      # absent; installing them makes those guards actually exercise the
+      # loopback ping/traceroute paths in CI.
+      - name: Install probe binaries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends iputils-ping traceroute
+
+      # Same uv pin as the Dockerfile builder stage, so the dependency set
+      # tested here is resolved exactly like the container build's.
+      - name: Install uv (pinned as in the Dockerfile)
+        run: python -m pip install "uv==0.12.0"
+
+      - name: Install project + dev dependencies from uv.lock
+        run: uv sync --frozen --extra dev
+
+      - name: Python tests
+        run: uv run --no-sync python -m pytest
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Dashboard JS tests
+        run: node tests/test_app.js
+
+  container:
+    name: Container build + runtime smoke (amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Build for the runner's native architecture and load it into the
+      # local docker daemon. No push, no registry credentials involved:
+      # the smoke test below runs against the image we just built.
+      - name: Build image (local load, no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: netplot:ci
+          # No provenance attestations on local-load builds: keeps the loaded
+          # image a plain single-platform image for the smoke script's
+          # docker inspect/run below.
+          provenance: false
+          build-args: |
+            NETPLOT_SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Real runtime gate: health, static assets, loopback ping via the
+      # API, persistence across container recreation, non-root user.
+      - name: Runtime smoke test
+        run: bash .github/scripts/smoke_container.sh netplot:ci

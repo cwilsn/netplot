@@ -1,0 +1,15 @@
+# Developer override: build the image from the local source tree instead
+# of pulling the published one. Always merged with the base file
+# explicitly — a bare `docker compose up` keeps pulling the published
+# image:
+#
+#   docker compose -f docker-compose.yml -f compose.build.yml up -d --build
+#
+# This `image:` value REPLACES the base file's ghcr.io reference (Compose
+# scalar-merge rule), so `--build` builds ./Dockerfile and tags it
+# netplot:dev. The port mapping, restart policy, and netplot-data volume
+# are inherited unchanged from docker-compose.yml.
+services:
+  netplot:
+    image: netplot:dev
+    build: .
