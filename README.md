@@ -4,6 +4,8 @@ Netplot is a PingPlotter-style network latency and packet-loss dashboard with
 continuous per-hop probing, live timelines, persistent background collections,
 CSV export, and Prometheus metrics.
 
+![Netplot dashboard showing per-hop latency, packet loss, and a live timeline](docs/netplot-dashboard.png)
+
 > **Private software.** The source repository (`github.com/jschert/netplot`)
 > and the container image (`ghcr.io/jschert/netplot`) are **private**. You
 > need a GitHub account that has been granted access to the repository
