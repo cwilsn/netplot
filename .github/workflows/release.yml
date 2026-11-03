@@ -36,7 +36,7 @@
 #
 # After the publish job moves the consumer tags, the consumer-gate job
 # replays the documented one-file install path as a brand-new user would:
-# it downloads THIS tag's docker-compose.yml from the private repository
+# it downloads THIS tag's docker-compose.yml from the public repository
 # with the short-lived job token (no checkout, no build), writes a .env
 # pinning the released X.Y.Z + an ephemeral loopback port, and runs
 # docker compose pull + up -d --wait against the just-published private
@@ -214,7 +214,7 @@ jobs:
             netplot-${{ matrix.arch }}.image-id
           if-no-files-found: error
           # The artifacts are only consumed by this run's publish job,
-          # moments later; keep private-repo artifact storage lean.
+          # moments later; keep artifact storage lean.
           retention-days: 7
 
   publish:
@@ -404,7 +404,7 @@ jobs:
 
           cd "$gate_dir"
 
-          # 1. The one file a new user needs, from THIS private tag, via
+          # 1. The one file a new user needs, from THIS release tag, via
           #    the job token (GH_TOKEN authenticates gh).
           gh api -H "Accept: application/vnd.github.raw" \
             "repos/${GITHUB_REPOSITORY}/contents/docker-compose.yml?ref=${GITHUB_REF_NAME}" \

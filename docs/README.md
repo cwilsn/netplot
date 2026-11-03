@@ -253,7 +253,6 @@ explicit `compose.build.yml` override, merged as
 `docker compose -f docker-compose.yml -f compose.build.yml up -d
 --build` (adds `build: .`, retags `netplot:dev` instead of the ghcr.io
 image — Compose scalar-merge replaces `image:`). The README Quick
-Start documents the authenticated private install path (gh CLI
-Compose download pinned to a `vX.Y.Z` ref + GHCR login) and explains
-the public/unauthenticated variant only conditionally — no doc claims
-the repository or image is public.
+Start documents the public, version-pinned Compose download and the
+authenticated private-image pull separately. Source checkout and native
+installation need no GitHub login; GHCR pulls still require package access.

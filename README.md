@@ -6,22 +6,22 @@ CSV export, and Prometheus metrics.
 
 ![Netplot dashboard showing per-hop latency, packet loss, and a live timeline](docs/netplot-dashboard.png)
 
-> **Private software.** The source repository (`github.com/jschert/netplot`)
-> and the container image (`ghcr.io/jschert/netplot`) are **private**. You
-> need a GitHub account that has been granted access to the repository
-> (e.g. as a collaborator) before you can download the Compose file or pull
-> the image. The instructions below use authenticated commands throughout.
-> If the owner makes both the repository and image public, use the public
-> download alternative below and omit authentication.
+> **Public source; private prebuilt images.** This repository can be browsed,
+> cloned, and downloaded without authentication. The container image
+> (`ghcr.io/jschert/netplot`) remains **private**: pulling it requires package
+> access and a credential with `read:packages`. Native installs and local
+> source builds do not require registry access.
 
 ## Quick Start (Docker)
 
 Requirements: Docker (Engine 24+ with the Compose v2 plugin, or Docker
-Desktop). Private downloads also require the [GitHub CLI](https://cli.github.com/)
-(`gh`) and account access. No Git checkout, Python, or build toolchain is needed.
+Desktop), package access, and a `read:packages` credential for the private
+image. The [GitHub CLI](https://cli.github.com/) (`gh`) is optional if you
+use the dedicated-token login below. No Git checkout, Python, or build
+toolchain is needed.
 The command examples use Bash (Linux/macOS, or WSL/Git Bash on Windows).
 
-### 1. One-time: authenticate to GitHub and GHCR
+### 1. One-time: authenticate to GHCR
 
 ```bash
 GH_BROWSER=true BROWSER=true gh auth login --hostname github.com --git-protocol https --web --scopes read:packages
@@ -64,17 +64,16 @@ the commands here only use your own local `gh`/`docker` binaries.
 
 ```bash
 mkdir netplot && cd netplot
-gh api 'repos/jschert/netplot/contents/docker-compose.yml?ref=v0.1.0' \
-  -H 'Accept: application/vnd.github.raw' > docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/jschert/netplot/v0.1.0/docker-compose.yml \
+  -o docker-compose.yml
 printf 'NETPLOT_VERSION=0.1.0\n' > .env
 ```
 
 The Compose file and image are both pinned to the `v0.1.0` release; `.env`
 keeps the selected image version across later commands. Substitute another
 published stable `vX.Y.Z` tag and matching `X.Y.Z` image version if desired.
-If the repository is made public, the unauthenticated download command is
-`curl -fsSL https://raw.githubusercontent.com/jschert/netplot/v0.1.0/docker-compose.yml -o docker-compose.yml`
-— until then that URL also requires authentication.
+Downloading the Compose file needs no GitHub login; pulling the private
+image still requires the registry authentication above.
 
 ### 3. Start
 
@@ -190,11 +189,11 @@ installation when you need the route as seen by the host itself.
 ## Native installation (no Docker)
 
 Native probing is supported on Linux and macOS. Requirements: Python ≥ 3.11,
-Git, the GitHub CLI for private source access, and `ping` + `traceroute` on
-`PATH`. No `[dev]` extras are needed. Install from an authenticated clone:
+Git, and `ping` + `traceroute` on `PATH`. No GitHub login, registry access,
+or `[dev]` extras are needed:
 
 ```bash
-gh repo clone jschert/netplot
+git clone https://github.com/jschert/netplot.git
 cd netplot
 python -m venv .venv && source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -209,9 +208,6 @@ The server listens on http://127.0.0.1:8000 by default (`--host` /
 out of the source tree. Native installs probe from the host itself — no
 VM indirection, so the Docker Desktop caveat above does not apply.
 
-(If the repository is ever made public, `git clone
-https://github.com/jschert/netplot.git` works without authentication.)
-
 ## Development
 
 Everything below is for working on the source; end users never need it.
@@ -219,7 +215,7 @@ Everything below is for working on the source; end users never need it.
 ### Source checkout and checks
 
 ```bash
-gh repo clone jschert/netplot
+git clone https://github.com/jschert/netplot.git
 cd netplot
 python -m venv .venv && source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -375,9 +371,9 @@ for the packaging contract.
   private release with the job's short-lived `GITHUB_TOKEN`, starts it on
   loopback, and verifies health and image identity. Anonymous pulls must
   remain denied. The Release run summary records the digest and results.
-- The repository and the GHCR package stay **private**; nothing automates
-  a visibility change. Users install via the authenticated path in
-  *Quick Start* (`read:packages` login + `gh api` Compose download).
+- The source repository is **public**; the GHCR package remains **private**.
+  Nothing automates package visibility changes. The Compose file downloads
+  anonymously; image pulls require package access and a `read:packages` login.
 
 ## Layout
 
