@@ -5,6 +5,11 @@ from __future__ import annotations
 import asyncio
 import httpx
 import json
+import shutil
+import ssl
+import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 from fastapi.testclient import TestClient
@@ -279,6 +284,163 @@ def test_fetch_query_caps_response_bytes():
                 "http://h:8086", "db", "q", transport=httpx.MockTransport(handler)
             )
         )
+
+
+# ------------------------------------- fetch_query over real HTTPS (TLS)
+
+
+def _self_signed_cert(tmp_path, name):
+    """Ephemeral self-signed cert + key for ``localhost`` / ``127.0.0.1``
+    via the openssl CLI (present on standard Linux/macOS dev and CI hosts).
+
+    Material lives only in ``tmp_path`` — never committed — and each cert
+    doubles as its own trust anchor when pointed at by ``SSL_CERT_FILE``.
+    """
+    cert, key = tmp_path / f"{name}-cert.pem", tmp_path / f"{name}-key.pem"
+    config = tmp_path / f"{name}-openssl.cnf"
+    config.write_text(
+        "[req]\n"
+        "distinguished_name = dn\n"
+        "x509_extensions = ext\n"
+        "prompt = no\n"
+        "[dn]\n"
+        f"CN = {name}\n"
+        "[ext]\n"
+        "subjectAltName = DNS:localhost, IP:127.0.0.1\n"
+        "basicConstraints = CA:TRUE\n"
+    )
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+            "-days",
+            "2",
+            "-config",
+            str(config),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=15,
+    )
+    return cert, key
+
+
+class _QuietHTTPServer(HTTPServer):
+    """HTTPServer that swallows per-connection errors: the untrusted-cert
+    test fails TLS handshakes on purpose, and socketserver would otherwise
+    print tracebacks for them."""
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+def _start_https_server(cert, key, captured):
+    """TLS-wrapped local HTTP server answering /query with a fixed body."""
+    body = json.dumps(
+        _influx_response([[1_700_000_000_000000000, 125000.0, 250000.0]])
+    ).encode()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            captured["path"] = self.path
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = _QuietHTTPServer(("127.0.0.1", 0), Handler)
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(str(cert), str(key))
+    server.socket = tls.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+@pytest.mark.integration
+def test_fetch_query_https_honors_ssl_cert_file_and_ignores_env_proxies(
+    tmp_path, monkeypatch
+) -> None:
+    """Real-TLS regression for the httpx move: an operator CA exported via
+    SSL_CERT_FILE must verify the endpoint (standard-library trust, as a
+    plain urllib fetch had), while implicit environment proxies stay
+    disabled — the dead HTTPS_PROXY below must never be used."""
+    if not shutil.which("openssl"):
+        pytest.skip("openssl binary not available on PATH")
+
+    cert, key = _self_signed_cert(tmp_path, "netplot-test-ca")
+    monkeypatch.setenv("SSL_CERT_FILE", str(cert))
+    # Nothing listens on port 9: honoring implicit proxies would fail the
+    # fetch; trust_env=False must connect to the local server directly.
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:9")
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setenv("no_proxy", "")
+
+    captured: dict = {}
+    server = _start_https_server(cert, key, captured)
+    try:
+        payload = asyncio.run(
+            influx.fetch_query(
+                f"https://localhost:{server.server_address[1]}",
+                "telegraf",
+                "SELECT 1",
+            )
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    # Successful bounded JSON consumption end to end over verified TLS.
+    assert payload == _influx_response(
+        [[1_700_000_000_000000000, 125000.0, 250000.0]]
+    )
+    assert "db=telegraf" in captured["path"]
+    assert "epoch=ns" in captured["path"]
+
+
+@pytest.mark.integration
+def test_fetch_query_https_rejects_certificate_outside_trust_store(
+    tmp_path, monkeypatch
+) -> None:
+    """Strict verification is preserved: a server certificate NOT anchored
+    in SSL_CERT_FILE (nor in the platform roots) is rejected at TLS before
+    any body is consumed — surfaced as the usual InfluxError, never
+    silently accepted."""
+    if not shutil.which("openssl"):
+        pytest.skip("openssl binary not available on PATH")
+
+    anchor, _ = _self_signed_cert(tmp_path, "netplot-trusted-ca")
+    cert, key = _self_signed_cert(tmp_path, "netplot-untrusted")  # different key
+    monkeypatch.setenv("SSL_CERT_FILE", str(anchor))
+
+    captured: dict = {}
+    server = _start_https_server(cert, key, captured)
+    try:
+        with pytest.raises(InfluxError, match="unreachable"):
+            asyncio.run(
+                influx.fetch_query(
+                    f"https://localhost:{server.server_address[1]}",
+                    "telegraf",
+                    "SELECT 1",
+                )
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert "path" not in captured  # rejected at TLS; no HTTP request served
 
 
 # ------------------------------------------------------------ the endpoint

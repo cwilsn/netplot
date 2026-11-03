@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from netplot import influx
 from netplot.session import MAX_SUBSCRIBERS_PER_SESSION, SubscriberLimitReached
 from netplot.web import create_app, SSE_CONCURRENCY_LIMIT, THROUGHPUT_CONCURRENCY_LIMIT
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 
 @pytest.mark.parametrize(
@@ -92,6 +93,59 @@ def test_explicit_lan_host(tmp_path, monkeypatch):
         )
         assert (
             client.get("/healthz", headers={"Host": "other.example"}).status_code == 400
+        )
+
+
+def test_https_origin_behind_proxy_only_for_trusted_peer(tmp_path, monkeypatch):
+    """X-Forwarded-Proto is honored only from the trusted proxy peer.
+
+    Runtime repro of the reverse-proxy deployment gap: the backend speaks
+    plain HTTP behind a proxy at a non-loopback address, the browser sends
+    an ``https://`` Origin with ``X-Forwarded-Proto: https``, and the Host
+    is the externally visible name. Uvicorn's ``ProxyHeadersMiddleware``
+    (driven by ``FORWARDED_ALLOW_IPS``) rewrites ``scope["scheme"]`` from
+    the forwarded header only when the direct peer is explicitly trusted;
+    the browser boundary then compares the Origin scheme against that
+    interpreted scheme. A proxy peer outside the narrow default therefore
+    keeps GET working but gets every mutation rejected (403) until that
+    exact peer is trusted — and untrusted peers must stay rejected.
+    """
+    monkeypatch.setenv("NETPLOT_ALLOWED_HOSTS", "netplot.example")
+    forwarded = {"Origin": "https://netplot.example", "X-Forwarded-Proto": "https"}
+    peer = ("203.0.113.7", 51000)
+
+    # The proxy peer is listed in FORWARDED_ALLOW_IPS: the forwarded scheme
+    # is interpreted, the HTTPS Origin matches, and mutations succeed.
+    trusted = TestClient(
+        ProxyHeadersMiddleware(create_app(data_dir=tmp_path), trusted_hosts="203.0.113.7"),
+        base_url="http://netplot.example",
+        client=peer,
+    )
+    with trusted:
+        assert trusted.get("/healthz").status_code == 200
+        assert (
+            trusted.put(
+                "/api/settings/internal", headers=forwarded, json={"cidrs": []}
+            ).status_code
+            == 200
+        )
+
+    # Same peer, but the trusted list names a different proxy: the scope
+    # scheme stays the backend's own HTTP, so GET still works while the
+    # HTTPS-Origin mutation is refused — scheme interpretation, not a
+    # config-text echo, is what is under test.
+    untrusted = TestClient(
+        ProxyHeadersMiddleware(create_app(data_dir=tmp_path), trusted_hosts="198.51.100.25"),
+        base_url="http://netplot.example",
+        client=peer,
+    )
+    with untrusted:
+        assert untrusted.get("/healthz").status_code == 200
+        assert (
+            untrusted.put(
+                "/api/settings/internal", headers=forwarded, json={"cidrs": []}
+            ).status_code
+            == 403
         )
 
 

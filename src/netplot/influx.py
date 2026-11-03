@@ -11,6 +11,11 @@ Design points (bounded first version):
 - **No credentials.** Only no-auth HTTP(S) sources are supported; the URL
   validator in :mod:`netplot.settings` rejects userinfo. Nothing is
   created, stored, or sent that resembles a secret.
+- **Standard-library TLS trust.** HTTPS sources are verified with a
+  ``ssl.create_default_context()`` context — ``SSL_CERT_FILE`` /
+  ``SSL_CERT_DIR`` and the platform default roots, exactly what a plain
+  urllib HTTPS fetch honors — while implicit environment proxies stay
+  disabled (``trust_env=False``).
 - **No arbitrary queries.** The InfluxQL statement is built entirely from
   a fixed template plus a validated identifier (charset-restricted at
   settings time) and escaped again here via :func:`_quote`.
@@ -45,6 +50,7 @@ import asyncio
 import json
 import logging
 import math
+import ssl
 
 import httpx
 
@@ -249,6 +255,8 @@ async def fetch_query(
             async with httpx.AsyncClient(
                 timeout=timeout_s,
                 follow_redirects=False,
+                # Preserve standard CA overrides without enabling environment proxies.
+                verify=ssl.create_default_context(),
                 trust_env=False,
                 transport=transport,
             ) as client:
