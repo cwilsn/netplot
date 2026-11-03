@@ -26,6 +26,8 @@ services:
     ports:
       - "${NETPLOT_BIND_ADDRESS:-127.0.0.1}:${NETPLOT_PORT:-8000}:8000"
     restart: unless-stopped
+    environment:
+      NETPLOT_ALLOWED_HOSTS: "${NETPLOT_ALLOWED_HOSTS:-localhost,127.0.0.1,::1}"
     # Persistent state lives in NETPLOT_DATA_DIR=/data (set in the
     # Dockerfile). The named volume keeps settings.json and background
     # session definitions across container recreation and upgrades;

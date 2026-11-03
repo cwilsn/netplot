@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import httpx
 import json
-from unittest import mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -74,11 +75,7 @@ def test_build_query_escapes_quotes_defensively() -> None:
 
 
 def _influx_response(rows, columns=("time", "b_in", "b_out")) -> dict:
-    return {
-        "results": [
-            {"series": [{"columns": list(columns), "values": rows}]}
-        ]
-    }
+    return {"results": [{"series": [{"columns": list(columns), "values": rows}]}]}
 
 
 def test_parse_points_converts_bytes_per_s_to_mbps_and_ns_to_seconds() -> None:
@@ -135,8 +132,14 @@ def test_parse_points_malformed_payloads_raise_influx_error() -> None:
         {"results": [{"series": {"a": 1}}]},
         {"results": [{"series": [42]}]},  # series entry not an object
         {"results": [{"series": [[1, 2, 3]]}]},
-        {"results": [{"series": [{"columns": "time,b_in", "values": []}]}]},  # columns not a list
-        {"results": [{"series": [{"columns": ["time", "b_in", "b_out"], "values": "nope"}]}]},
+        {
+            "results": [{"series": [{"columns": "time,b_in", "values": []}]}]
+        },  # columns not a list
+        {
+            "results": [
+                {"series": [{"columns": ["time", "b_in", "b_out"], "values": "nope"}]}
+            ]
+        },
     ]
     for payload in bad_payloads:
         with pytest.raises(InfluxError):
@@ -196,7 +199,11 @@ def _simulate_query(samples, query, step_s):
                 if s1 >= s0:
                     row[2] = (s1 - s0) / dt * unit_s
         rows.append(row)
-    return {"results": [{"series": [{"columns": ["time", "b_in", "b_out"], "values": rows}]}]}
+    return {
+        "results": [
+            {"series": [{"columns": ["time", "b_in", "b_out"], "values": rows}]}
+        ]
+    }
 
 
 @pytest.mark.parametrize("step_s", [5, 10, 60, 300])
@@ -208,8 +215,7 @@ def test_derivative_reads_bytes_per_second_at_every_step(step_s) -> None:
     # 5/10/60/300×.
     rate = 125_000.0  # B/s == 1 Mbps
     samples = [
-        (i * 5, 1_000_000 + i * 5 * rate, 2_000_000 + i * 5 * rate)
-        for i in range(124)
+        (i * 5, 1_000_000 + i * 5 * rate, 2_000_000 + i * 5 * rate) for i in range(124)
     ]
     query = build_query("eth0", "", step_s, samples[0][0], samples[-1][0])
     assert 'non_negative_derivative(last("bytes_recv"), 1s)' in query
@@ -224,69 +230,62 @@ def test_derivative_reads_bytes_per_second_at_every_step(step_s) -> None:
 # ------------------------------------------------------------- fetch_query
 
 
-def test_fetch_query_builds_url_and_parses_json() -> None:
-    captured: dict = {}
+class BytesStream(httpx.AsyncByteStream):
+    def __init__(self, body):
+        self.body = body
 
-    class FakeResponse:
-        status = 200
-
-        def read(self, n=-1):
-            return json.dumps(_influx_response([[0, 1.0, 2.0]])).encode()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-    def fake_open(req, timeout=None):
-        captured["url"] = req.full_url
-        captured["timeout"] = timeout
-        return FakeResponse()
-
-    with mock.patch.object(influx._OPENER, "open", new=fake_open):
-        payload = influx.fetch_query("http://h:8086/", "telegraf", "SELECT 1")
-    assert captured["url"].startswith("http://h:8086/query?")
-    assert "db=telegraf" in captured["url"]
-    assert "epoch=ns" in captured["url"]
-    assert captured["timeout"] == influx.INFLUX_TIMEOUT_S
-    assert payload["results"]
+    async def __aiter__(self):
+        yield self.body
 
 
-def test_fetch_query_unreachable_raises_influx_error() -> None:
-    import urllib.error
+def test_fetch_query_builds_url_and_parses_json():
+    def handler(request):
+        assert str(request.url).startswith("http://h:8086/query?")
+        assert request.url.params["db"] == "telegraf"
+        assert request.url.params["epoch"] == "ns"
+        return httpx.Response(200, stream=BytesStream(b'{"results": []}'))
 
-    with mock.patch.object(
-        influx._OPENER,
-        "open",
-        side_effect=urllib.error.URLError("refused"),
-    ), pytest.raises(InfluxError, match="unreachable"):
-        influx.fetch_query("http://h:8086", "telegraf", "SELECT 1")
+    assert asyncio.run(
+        influx.fetch_query(
+            "http://h:8086/",
+            "telegraf",
+            "SELECT 1",
+            transport=httpx.MockTransport(handler),
+        )
+    ) == {"results": []}
 
 
-def test_fetch_query_caps_response_bytes() -> None:
-    class BigResponse:
-        def __enter__(self):
-            return self
+def test_fetch_query_unreachable_raises_influx_error():
+    def handler(request):
+        raise httpx.ConnectError("refused")
 
-        def __exit__(self, *exc):
-            return False
+    with pytest.raises(InfluxError, match="unreachable"):
+        asyncio.run(
+            influx.fetch_query(
+                "http://h:8086", "db", "q", transport=httpx.MockTransport(handler)
+            )
+        )
 
-        def read(self, n=-1):
-            assert n == influx.MAX_RESPONSE_BYTES + 1  # bounded read
-            return b"x" * (influx.MAX_RESPONSE_BYTES + 1)
 
-    with mock.patch.object(
-        influx._OPENER, "open", new=lambda req, timeout=None: BigResponse()
-    ), pytest.raises(InfluxError, match="too large"):
-        influx.fetch_query("http://h:8086", "telegraf", "SELECT 1")
+def test_fetch_query_caps_response_bytes():
+    def handler(request):
+        return httpx.Response(
+            200, stream=BytesStream(b"x" * (influx.MAX_RESPONSE_BYTES + 1))
+        )
+
+    with pytest.raises(InfluxError, match="too large"):
+        asyncio.run(
+            influx.fetch_query(
+                "http://h:8086", "db", "q", transport=httpx.MockTransport(handler)
+            )
+        )
 
 
 # ------------------------------------------------------------ the endpoint
 
 
 def _configured_client(tmp_path) -> TestClient:
-    client = TestClient(create_app(data_dir=tmp_path))
+    client = TestClient(create_app(data_dir=tmp_path), base_url="http://localhost")
     with client:
         put = client.put(
             "/api/settings/influx",
@@ -301,7 +300,7 @@ def _configured_client(tmp_path) -> TestClient:
 
 
 def test_throughput_unconfigured_returns_400(tmp_path) -> None:
-    client = TestClient(create_app(data_dir=tmp_path))
+    client = TestClient(create_app(data_dir=tmp_path), base_url="http://localhost")
     with client:
         r = client.get("/api/throughput?start=0&end=60")
         assert r.status_code == 400
@@ -316,7 +315,7 @@ def test_throughput_returns_normalized_points(tmp_path, monkeypatch) -> None:
     }
     captured: dict = {}
 
-    def fake_query(cfg, start_s, end_s):
+    async def fake_query(cfg, start_s, end_s):
         captured["cfg"] = cfg
         captured["span"] = (start_s, end_s)
         return fixture
@@ -338,7 +337,7 @@ def test_throughput_returns_normalized_points(tmp_path, monkeypatch) -> None:
 def test_throughput_502_on_influx_error(tmp_path, monkeypatch) -> None:
     client = _configured_client(tmp_path)
 
-    def boom(cfg, start_s, end_s):
+    async def boom(cfg, start_s, end_s):
         raise InfluxError("influx unreachable: [Errno 61] Connection refused")
 
     monkeypatch.setattr("netplot.web.influx_mod.query_throughput", boom)
@@ -380,8 +379,10 @@ def test_query_throughput_end_to_end_against_local_http_server(tmp_path) -> None
             captured["path"] = self.path
             body = json.dumps(
                 _influx_response(
-                    [[1_700_000_000_000000000, 125000.0, 250000.0],
-                     [1_700_000_005_000000000, None, None]]
+                    [
+                        [1_700_000_000_000000000, 125000.0, 250000.0],
+                        [1_700_000_005_000000000, None, None],
+                    ]
                 )
             ).encode()
             self.send_response(200)
@@ -398,7 +399,7 @@ def test_query_throughput_end_to_end_against_local_http_server(tmp_path) -> None
     thread.start()
     try:
         port = server.server_address[1]
-        client = TestClient(create_app(data_dir=tmp_path))
+        client = TestClient(create_app(data_dir=tmp_path), base_url="http://localhost")
         with client:
             put = client.put(
                 "/api/settings/influx",
@@ -413,7 +414,11 @@ def test_query_throughput_end_to_end_against_local_http_server(tmp_path) -> None
             assert r.status_code == 200
             body = r.json()
             assert body["step_s"] == 5
-            assert body["points"][0] == {"t": 1700000000.0, "in_mbps": 1.0, "out_mbps": 2.0}
+            assert body["points"][0] == {
+                "t": 1700000000.0,
+                "in_mbps": 1.0,
+                "out_mbps": 2.0,
+            }
             assert body["points"][1]["in_mbps"] is None  # gap preserved, not zeroed
             assert "db=telegraf" in captured["path"]
             assert "epoch=ns" in captured["path"]

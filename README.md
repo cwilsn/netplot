@@ -141,11 +141,29 @@ networks you fully trust (e.g. an isolated lab VLAN), and never to the
 public internet:
 
 ```bash
-NETPLOT_BIND_ADDRESS=0.0.0.0 docker compose up -d        # all interfaces
-NETPLOT_BIND_ADDRESS=192.168.1.10 docker compose up -d   # one interface only
+NETPLOT_ALLOWED_HOSTS=192.168.1.10 NETPLOT_BIND_ADDRESS=0.0.0.0 docker compose up -d        # all interfaces
+NETPLOT_ALLOWED_HOSTS=192.168.1.10 NETPLOT_BIND_ADDRESS=192.168.1.10 docker compose up -d   # one interface only
 ```
 
-For a persistent LAN binding, set `NETPLOT_BIND_ADDRESS` in `.env`. The
+Set `NETPLOT_ALLOWED_HOSTS` to additional exact comma-separated hostnames/IPs clients
+use (no schemes, ports, or wildcards; IPv6 addresses without brackets). The
+loopback hosts `localhost,127.0.0.1,::1` are always allowed, including for
+the container health check. This also applies to native installs.
+Unlisted Host headers return 400; browser mutations from another origin
+return 403. CLI clients without an Origin header remain supported. For a
+reverse proxy, preserve Host and configure the externally visible hostname;
+only trust forwarded scheme headers from that proxy. Shared deployments
+should use an authenticating reverse proxy and prevent direct backend access.
+Host/Origin validation does not provide user authentication.
+
+Throughput queries allow four concurrent requests per process and have a
+five-second total deadline; excess requests receive 429 with Retry-After.
+Event streams allow eight subscribers per trace and 32 per process, also
+returning 429 when full. Closing a stream releases its slot. Influx redirects,
+compressed responses, and environment-configured outbound proxies are disabled.
+
+For a persistent LAN binding, set both `NETPLOT_BIND_ADDRESS` and
+`NETPLOT_ALLOWED_HOSTS` in `.env`. The
 one-command overrides above do not persist; a later bare `docker compose
 up -d` uses the saved `.env` value or the loopback default.
 
